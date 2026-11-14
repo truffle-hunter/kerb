@@ -2,7 +2,7 @@
 import { now as clockNow, advance as clockAdvance, dev } from './platform/clock.js';
 import { watch } from './platform/location.js';
 import * as store from './platform/store.js';
-import { setShift } from './platform/wake.js';
+import { setKeepAwake, awakeHeld } from './platform/wake.js';
 import { exportFile } from './platform/share.js';
 import { dublinParts, hhmm, daysBetween } from './engine/time.js';
 import { status, isUsable } from './engine/legal.js';
@@ -10,8 +10,9 @@ import { distM } from './engine/geo.js';
 import { recommend, score } from './engine/demand.js';
 import { upcoming, nextImportant, triggersAround, timetableStatus } from './engine/triggers.js';
 import { initial as loggerInitial, step as loggerStep, deriveWaits, detectStand, autoStartFor } from './engine/logger.js';
+import { deriveShifts, currentShift, activityOf, lastActivity, shiftDue, tagWaits } from './engine/shift.js';
 import { toJSON, toCSV } from './engine/export.js';
-import { parseBackup, mergeEvents, closeDanglingWaits } from './engine/backup.js';
+import { parseBackup, mergeEvents, closeDanglingWaits, closeDanglingShifts, hasOwnLog } from './engine/backup.js';
 import { sunElevation } from './ui/dom.js';
 import { glance } from './ui/glance.js';
 import { detail } from './ui/detail.js';
@@ -40,10 +41,11 @@ const weatherOn = !dev || new URLSearchParams(location.search).get('weather') ==
 const S = {
   ready: false, data: null, byId: {}, ctx: null, now: clockNow(), fix: null, loc: 'pending', km: null, kmRequested: null,
   recs: [], next: null, logger: loggerInitial(), events: [], waits: [], usableIds: new Set(),
-  settings: { nav: 'google', permit: false, theme: 'auto', shift: false, relay: '', autoLog: true },
+  settings: { nav: 'google', permit: false, theme: 'auto', keepAwake: false, relay: '', autoLog: true },
   view: 'glance', detailId: null, weather: null, live: null, storageOk: true, firstRun: false, lastTop: null, changed: false,
   online: navigator.onLine, picker: false, openSource: null, timetable: { current: true, to: null }, eventsStale: false, updateReady: false, nearby: [], cabsAhead: null, lastReport: null, ocb: OCB, device: null,
   fixLog: [], offlineBootAt: null, lastBackup: null, persisted: null, check: null, restoreMsg: null, rankQuery: '', detailFrom: 'glance', logFilter: null, scroll: {}, renderedView: null, lastRender: null, motion: {}, // Phone check, backup (ADR 0008)
+  shifts: [], shift: null, shiftAnchor: null, shiftSeenAt: null, shiftView: null, shiftDue: null, // ADR 0010
 };
 let worker = null, workerReady = false, workerFailed = false, loc = null, weatherAt = -Infinity, relayAt = -Infinity;
 const hooks = { afterRender: [] };
@@ -91,6 +93,7 @@ function snapshot(id) {
 function loggerCtx() {
   return { stands: S.data.stands, usableIds: S.usableIds, chains: S.data.chains, params: S.data.params, shown: snapshot,
     auto: S.settings.autoLog !== false, // ADR 0005: automatic joins unless switched off in Settings
+    onShift: !!S.shift, // ADR 0010: off shift nothing is logged
     versions: { model: MODEL, params: S.data.params.version, bundle: S.data.meta.bundle_version }, device: S.device };
 }
 
@@ -98,15 +101,55 @@ function feedLogger(input) {
   const before = S.logger;
   const r = loggerStep(S.logger, input, loggerCtx());
   S.logger = r.state;
-  if (before.mode !== r.state.mode) S.barChangedAt = performance.now();
+  if (before.mode !== r.state.mode) { S.barChangedAt = performance.now(); S.shiftView = null; } // a stray End shift never hides Fare?
   for (const ev of r.events) {
-    S.events.push(ev);
-    store.append(ev).catch(() => { S.storageOk = false; render(); }); // e.g. quota or eviction: say so, never lose silently
+    record(ev);
     if (ev.type === 'join') { S.cabsAhead = null; S.openSource = ev.source; }
     if (ev.type === 'report') S.lastReport = { stand: ev.stand, cabsAhead: ev.cabsAhead, people: ev.people, t: new Date(ev.t) };
   }
-  if (r.events.length) S.waits = deriveWaits(S.events);
+  if (r.events.length) refreshLog();
   return r.events.length > 0 || before.mode !== r.state.mode || before.stand !== r.state.stand;
+}
+
+function record(ev) {
+  S.events.push(ev);
+  store.append(ev).catch(() => { S.storageOk = false; render(); }); // e.g. quota or eviction: say so, never lose silently
+}
+
+/** Waits and shifts from the event log (ADR 0010): each wait tagged with its shift, or legacy, or off shift. */
+function refreshLog() {
+  S.shifts = deriveShifts(S.events);
+  S.shift = currentShift(S.shifts);
+  S.waits = tagWaits(deriveWaits(S.events), S.shifts);
+}
+
+// ---- Shifts (ADR 0010): one tap starts one; it ends by itself after the idle gap, backdated to the last sign of work.
+const shiftP = () => S.data.params.shift;
+let seenWritten = 0;
+function beat(force = false) { // a sign of work: kept as a heartbeat (no coordinates), written at most once a minute
+  S.shiftSeenAt = S.now.toISOString();
+  if (force || performance.now() - seenWritten >= 60000) { seenWritten = performance.now(); store.setSetting('shiftSeenAt', S.shiftSeenAt); }
+}
+const applyAwake = () => setKeepAwake(!!(S.settings.keepAwake && S.shift));
+function endShiftAt(t, source, uncertain) {
+  feedLogger({ type: 'shift_end', t: new Date(t), uncertain }); // an open wait closes first: no shift event splits a wait
+  record({ type: 'shift_end', t: new Date(t).toISOString(), detected_at: S.now.toISOString(), source, ...(uncertain ? { uncertain: true } : {}) });
+  refreshLog();
+  S.shiftView = null;
+  S.shiftAnchor = null;
+  applyAwake();
+}
+/** Ends the shift if it has gone idle (or hit the cap); runs at boot, on every tick and on resume. */
+function checkShiftDue() {
+  if (!S.shift) return false;
+  const due = shiftDue(S.shift, lastActivity(S.events, S.shift, S.shiftSeenAt), S.now.getTime(), shiftP());
+  S.shiftDue = null;
+  if (!due) return false;
+  // a wait still open after a gap (the screen locked in a long airport queue): Kerb couldn't see, so the next fix decides,
+  // still in the queue = working, gone = the shift ended at the last sign of work (review fix). The cap is never deferred.
+  if (due.source === 'idle' && S.logger.mode === 'waiting') { S.shiftDue = due; return false; }
+  endShiftAt(due.t, due.source, true);
+  return true;
 }
 
 function restoreLogger(events) {
@@ -163,7 +206,17 @@ function onFix(f) {
   S.fixLog.push({ accuracy: f.accuracy, speed: f.speed }); // Phone check: accuracy and speed only, in memory
   if (S.fixLog.length > 60) S.fixLog.shift();
   S.loc = 'ok';
+  const pending = S.shift ? S.shiftDue : null; // an idle end held back while a wait was open (checkShiftDue)
   const loggerChanged = feedLogger({ type: 'fix', fix: f });
+  if (S.shift && pending) {
+    S.shiftDue = null;
+    if (S.logger.mode === 'waiting') beat(); // still in the queue after the gap: working
+    else { endShiftAt(pending.t, pending.source, true); recompute(); render(); return; } // left during the gap
+  } else if (S.shift) { // a move of 150 m or an open wait is a sign of work; a still car never is (ADR 0010)
+    const a = activityOf({ anchor: S.shiftAnchor, fix: f, mode: S.logger.mode, locOk: true }, shiftP());
+    S.shiftAnchor = a.anchor;
+    if (a.active) beat();
+  }
   const p = [f.lon, f.lat];
   if (loc) loc.setHigh(S.logger.mode === 'waiting' || S.data.stands.some((s) => s.head && distM(p, s.head) <= 500));
   const moved = !S.kmRequested || distM(S.kmRequested, p) >= MOVE_M;
@@ -218,6 +271,10 @@ function onTick() {
   if (performance.now() - weatherAt >= WEATHER_EVERY_MS) refreshWeather();
   if (S.settings.relay && performance.now() - relayAt >= RELAY_EVERY_MS) refreshRelay();
   feedLogger({ type: 'tick', t: S.now });
+  // ADR 0010: judge the gap before counting this minute (a phone back from hours hidden must not look busy), then
+  // count it if Kerb can't see location (it can't tell) or a wait is open
+  if (!checkShiftDue() && S.shift && !S.shiftDue && document.visibilityState === 'visible'
+      && (S.loc !== 'ok' || S.logger.mode === 'waiting' || S.logger.mode === 'outcome')) beat();
   for (const f of hooks.tick || []) f();
   recompute();
   render();
@@ -232,6 +289,33 @@ const A = {
   openCheckLog() { S.view = 'log'; S.logFilter = 'check'; render(); }, // the review chip: only waits to check
   openSettings() { S.view = 'settings'; render(); },
   join(id) { feedLogger({ type: 'tap_join', stand: id, t: at() }); S.picker = false; render(); },
+  startShift(source = 'tap') { // ADR 0010: the roof sign goes on
+    if (S.shift) return;
+    S.now = at();
+    record({ type: 'shift_start', t: S.now.toISOString(), source });
+    refreshLog();
+    S.shiftAnchor = S.fix ? [S.fix.lon, S.fix.lat] : null; // moves are measured from where the shift started
+    beat(true);
+    S.shiftView = null;
+    applyAwake();
+    recompute();
+    render();
+  },
+  openShift() { S.shiftView = 'end'; render(); },
+  keepGoing() { S.shiftView = null; render(); },
+  endShift() { if (!S.shift) return; S.now = at(); endShiftAt(S.now.getTime(), 'tap', false); recompute(); render(); },
+  resumeShift() { // "Still on shift": undo an end within resume_max_min of when it happened
+    const last = S.shifts[S.shifts.length - 1];
+    if (S.shift || !last || !last.end || at() - Date.parse(last.end) > shiftP().resume_max_min * 60000) return;
+    S.now = at();
+    record({ type: 'shift_resume', t: S.now.toISOString(), end: last.end });
+    refreshLog();
+    S.shiftAnchor = S.fix ? [S.fix.lon, S.fix.lat] : null;
+    beat(true);
+    applyAwake();
+    recompute();
+    render();
+  },
   start() { feedLogger({ type: 'tap_start', t: at() }); S.picker = false; render(); }, // ADR 0006: rank detected, no list
   still() { feedLogger({ type: 'tap_still', t: at() }); render(); },
   setMode(auto) { A.setSetting('autoLog', auto); },
@@ -259,10 +343,8 @@ const A = {
     }
   },
   review(type, wait, field, value) { // Log review: confirm / edit / void a finished wait (append-only, ADR 0005)
-    const ev = { type, t: at().toISOString(), wait, source: 'review', ...(field ? { field, value } : {}) };
-    S.events.push(ev);
-    store.append(ev).catch(() => { S.storageOk = false; render(); });
-    S.waits = deriveWaits(S.events);
+    record({ type, t: at().toISOString(), wait, source: 'review', ...(field ? { field, value } : {}) });
+    refreshLog();
     render();
   },
   fareIn() { feedLogger({ type: 'tap_fare_in', t: at() }); render(); },
@@ -284,7 +366,7 @@ const A = {
   setSetting(k, v) {
     S.settings[k] = v;
     store.setSetting(k, v);
-    if (k === 'shift') setShift(v);
+    if (k === 'keepAwake') applyAwake();
     if (k === 'relay') refreshRelay();
     for (const f of hooks.setting || []) f(k, v);
     recompute();
@@ -292,7 +374,7 @@ const A = {
   },
   async exportJSON() {
     const meta = { model: MODEL, params_version: S.data.params.version, bundle_version: S.data.meta.bundle_version, exported_at: at().toISOString() };
-    const how = await exportFile(`kerb-waits-${dublinParts(at()).date}.json`, toJSON({ events: S.events, waits: S.waits, meta, device: S.device }), 'application/json');
+    const how = await exportFile(`kerb-waits-${dublinParts(at()).date}.json`, toJSON({ events: S.events, waits: S.waits, meta, device: S.device, shifts: S.shifts }), 'application/json');
     if (how !== 'cancelled') { S.lastBackup = at().toISOString(); store.setSetting('lastBackup', S.lastBackup); render(); }
   },
   async restore(file) { // ADR 0008: add the backup's events this phone doesn't have; the same file twice changes nothing
@@ -302,16 +384,17 @@ const A = {
     try { b = parseBackup(await file.text()); } catch (e) {
       S.restoreMsg = "This isn't a Kerb backup file. Nothing was changed."; render(); return;
     }
-    const wasEmpty = S.events.length === 0, before = S.waits.length;
+    const wasEmpty = !hasOwnLog(S.events), before = S.waits.length; // shift events alone aren't a log (ADR 0010)
     const m = mergeEvents(S.events, b.events, { localDevice: S.device, fileDevice: b.device });
     // a wait left open in the backup (taken mid-wait) is closed at its last sighting, not resumed weeks later
-    m.events = closeDanglingWaits(m.events);
+    m.events = closeDanglingShifts(closeDanglingWaits(m.events)); // and a shift left open before a later start ends (ADR 0010)
     if (!m.added) { S.restoreMsg = 'Nothing new: everything in this backup is already on this phone.'; render(); return; }
     try { await store.replaceAll(m.events); } catch (e) {
       S.restoreMsg = "Couldn't save the restored log on this phone. Nothing was changed."; render(); return;
     }
     S.events = m.events;
-    S.waits = deriveWaits(S.events);
+    refreshLog();
+    checkShiftDue();
     if (m.device && m.device !== S.device) { S.device = m.device; store.setSetting('device', S.device); }
     if (wasEmpty && b.exportedAt) { S.lastBackup = b.exportedAt; store.setSetting('lastBackup', S.lastBackup); } // it is in that file
     const added = S.waits.length - before, already = Math.max(0, deriveWaits(b.events).length - added);
@@ -381,8 +464,13 @@ async function boot() {
   S.offlineBootAt = navigator.onLine ? saved.offlineBootAt || null : clockNow().toISOString();
   if (!navigator.onLine) store.setSetting('offlineBootAt', S.offlineBootAt);
   S.events = await store.all();
-  S.waits = deriveWaits(S.events);
+  // ADR 0010: "Shift mode" (screen on) is now "Keep the screen on while on shift"
+  if (saved.keepAwake === undefined && saved.shift !== undefined) { S.settings.keepAwake = !!saved.shift; store.setSetting('keepAwake', S.settings.keepAwake); }
+  S.shiftSeenAt = saved.shiftSeenAt || null;
+  refreshLog();
   restoreLogger(S.events);
+  S.now = clockNow();
+  checkShiftDue(); // a shift left on while Kerb was closed ends at its last sign of work
   for (const f of hooks.boot || []) await f(S);
   startWorker();
   loc = watch(onFix, onLocError);
@@ -391,7 +479,7 @@ async function boot() {
   addEventListener('pageshow', (e) => { if (e.persisted) onResume(); });
   addEventListener('online', () => { S.online = true; render(); });
   addEventListener('offline', () => { S.online = false; render(); });
-  if (S.settings.shift) setShift(true);
+  applyAwake();
   recompute();
   render();
   S.ready = true;
@@ -419,6 +507,7 @@ window.__kerb = {
   ...(dev ? {
     S, advance(ms) { clockAdvance(ms); onTick(); },
     detail(id) { A.detail(id); },
+    awake: () => awakeHeld(),
     fix(p) { onFix({ lon: p.lon, lat: p.lat, speed: p.speed ?? null, accuracy: p.accuracy ?? 10, t: clockNow() }); },
   } : {}),
 };

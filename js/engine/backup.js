@@ -41,7 +41,9 @@ export function mergeEvents(local, incoming, { localDevice = null, fileDevice = 
     if (j >= fresh.length || (i < local.length && emitted(local[i]) <= emitted(fresh[j]))) events.push(local[i++]);
     else events.push(fresh[j++]);
   }
-  return { events, added: fresh.length, device: local.length === 0 && fileDevice ? fileDevice : localDevice };
+  // the backup's code is adopted only by a phone with no log of its own; shift events alone don't count (ADR 0010: a new
+  // phone's driver may tap Start shift before restoring)
+  return { events, added: fresh.length, device: !hasOwnLog(local) && fileDevice ? fileDevice : localDevice };
 }
 
 /**
@@ -67,3 +69,30 @@ export function closeDanglingWaits(events) {
   if (open) close();
   return out;
 }
+
+/**
+ * A restore can merge in a shift that never ended, followed by another start (ADR 0010). Each such shift ends at the
+ * last event before the next start (or at its own start), marked restore and uncertain. A trailing open shift is left
+ * for the automatic end to judge. Idempotent: closing an already closed log changes nothing.
+ */
+export function closeDanglingShifts(events) {
+  const out = [];
+  let open = false, last = null, lastEnd = null, openStart = null;
+  for (const e of events) {
+    if (e.type === 'shift_start') {
+      if (open) out.push({ type: 'shift_end', t: last, detected_at: last, source: 'restore', uncertain: true });
+      open = true; last = e.t; openStart = e.t;
+    } else if (e.type === 'shift_end') {
+      if (open && e.t >= openStart) { open = false; lastEnd = e.t; } // an end from before this shift began is an older one's
+    } else if (e.type === 'shift_resume') {
+      if (!open && lastEnd && e.end === lastEnd) open = true;
+    } else if (open) {
+      last = e.detected_at && e.detected_at > e.t ? e.detected_at : e.t;
+    }
+    out.push(e);
+  }
+  return out;
+}
+
+/** A log of its own: any event other than shift start, end or resume. */
+export const hasOwnLog = (events) => events.some((e) => !['shift_start', 'shift_end', 'shift_resume'].includes(e.type));

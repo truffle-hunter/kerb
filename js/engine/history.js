@@ -21,7 +21,7 @@ const atLeastOne = (w) => w.outcome !== 'fare' || !!(w.end_uncertain || w.start_
  */
 export function ownHistory(waits, stand, now) {
   const since = now - WEEKS * 7 * 86400000;
-  const all = waits.filter((w) => w.stand === stand && w.confirmed !== false && Number.isFinite(w.wait_min)
+  const all = waits.filter((w) => w.stand === stand && w.confirmed !== false && !w.off_shift && Number.isFinite(w.wait_min)
     && Date.parse(w.joined_at) >= since && Date.parse(w.joined_at) <= now)
     .sort((a, b) => Date.parse(b.joined_at) - Date.parse(a.joined_at));
   const sameBand = all.filter((w) => band(new Date(w.joined_at)) === band(now));

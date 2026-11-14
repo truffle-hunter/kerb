@@ -115,10 +115,16 @@ function canAutoJoin(dwell, stand, ctx) {
  * wait by itself, from the same gating as onFixIdle (suppression after an answer or discard included). Null when
  * Auto is off or there is no stop in a queue zone. */
 export function autoStartFor(state, ctx) {
-  if (!ctx.auto || state.mode !== 'idle' || !state.dwell) return null;
+  if (ctx.onShift === false || !ctx.auto || state.mode !== 'idle' || !state.dwell) return null; // off shift: nothing starts (ADR 0010)
   const stand = byId(ctx, state.dwell.stand);
   if (!stand) return null;
   return { stand: stand.id, will: !state.suppressedIds.includes(stand.id) && canAutoJoin(state.dwell, stand, ctx) };
+}
+
+/** The stop Kerb is watching, if any: {stand, seconds in its queue zone}. Off shift it is still watched (ADR 0010), so the
+ * bar can offer "Start shift?" at a rank and a shift started there gets the wait from the start of the stop. */
+export function dwelling(state) {
+  return state.dwell ? { stand: state.dwell.stand, seconds: sec(state.dwell.lastIn, state.dwell.since) } : null;
 }
 
 function onFixIdle(state, s, fix, p, gap, ctx) {
@@ -153,7 +159,8 @@ function onFixIdle(state, s, fix, p, gap, ctx) {
   const dur = sec(s.dwell.lastIn, s.dwell.since); // only time actually seen in the zone counts
   const auto = canAutoJoin(s.dwell, stand, ctx);
   const inNow = s.dwell.lastIn === fix.t;
-  if (auto && inNow && dur >= L.auto_join_s) {
+  const working = ctx.onShift !== false; // ADR 0010: off shift nothing is logged, but the stop is still watched
+  if (working && auto && inNow && dur >= L.auto_join_s) {
     const z = s.dwell.z;
     const est = cabsEst(stand, z, fix, L);
     const ev = joinEvent({ ...s, mode: 'idle' }, { stand: stand.id, t: s.dwell.since }, ctx,
@@ -163,7 +170,7 @@ function onFixIdle(state, s, fix, p, gap, ctx) {
     w.candidates = s.dwell.cands;
     return { state: w, events: [ev] };
   }
-  if (s.mode === 'idle' && dur >= L.prompt_s && ctx.auto && !auto) { // ADR 0006: Manual has no prompt; Auto asks only where it can't start itself
+  if (working && s.mode === 'idle' && dur >= L.prompt_s && ctx.auto && !auto) { // ADR 0006: Manual has no prompt; Auto asks only where it can't start itself
     return { state: { ...s, mode: 'prompt', stand: s.dwell.stand, candidates: s.dwell.cands, promptAt: fix.t }, events: [] };
   }
   if (s.mode === 'prompt' && !auto && sec(fix.t, s.promptAt) > L.prompt_expire_s) {
@@ -294,7 +301,7 @@ export function step(state, input, ctx) {
     case 'dismiss':
       return state.mode === 'prompt' ? { state: { ...state, mode: 'idle', stand: null, candidates: [], promptAt: null, suppressedIds: [state.stand] }, events: [] } : { state, events: [] };
     case 'tap_join': {
-      if (!input.stand && !state.stand) return { state, events: [] };
+      if (ctx.onShift === false || (!input.stand && !state.stand)) return { state, events: [] };
       const events = [];
       if (state.mode === 'waiting' || state.mode === 'outcome') events.push(outcome(state, input.t, 'unknown', 'new_join'));
       const j = joinEvent(state.mode === 'waiting' || state.mode === 'outcome' ? { ...state, mode: 'idle' } : state, input, ctx);
@@ -306,7 +313,7 @@ export function step(state, input, ctx) {
       return { state: w, events };
     }
     case 'tap_start': { // ADR 0006: "Start rank timer" / "Start now" — the rank is detected, never picked from a list
-      if (state.mode === 'waiting' || state.mode === 'outcome') return { state, events: [] };
+      if (ctx.onShift === false || state.mode === 'waiting' || state.mode === 'outcome') return { state, events: [] };
       const det = detectStand(state.lastFix, input.t, ctx);
       const observed = state.dwell && state.dwell.stand === det.stand && !state.dwell.startUncertain;
       const t = ctx.auto && det.stand && observed ? state.dwell.since : input.t; // Auto "Start now" keeps the first minute
@@ -360,6 +367,13 @@ export function step(state, input, ctx) {
       if (state.mode !== 'waiting' && state.mode !== 'outcome') return { state, events: [] };
       return { state: toIdle(state, { suppressedIds: state.mode === 'waiting' ? [state.stand] : [] }),
         events: [outcome(state, input.t, input.type === 'tap_fare' ? 'fare' : 'left_empty', 'tap')] };
+    case 'shift_end': { // ADR 0010: the shift is ending; an open wait closes first, so no shift event splits a wait
+      if (state.mode === 'prompt') return { state: { ...state, mode: 'idle', stand: null, candidates: [], promptAt: null }, events: [] };
+      if (state.mode !== 'waiting' && state.mode !== 'outcome') return { state, events: [] };
+      const ev = outcome(state, input.t, 'unknown', 'shift_end');
+      if (input.uncertain) ev.uncertain = true; // an automatic end: the wait lasted at least until it was last seen
+      return { state: toIdle(state), events: [ev] };
+    }
     case 'cancel':
       if (state.mode !== 'waiting') return { state, events: [] };
       return { state: toIdle(state, { suppressedIds: [state.stand] }), events: [{ type: 'cancel', t: iso(input.t), stand: state.stand }] };

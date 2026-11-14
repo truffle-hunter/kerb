@@ -4,7 +4,7 @@
 import { h, iconButton } from './dom.js';
 import { fixSummary } from '../engine/phonecheck.js';
 import * as store from '../platform/store.js';
-import { shiftSupported } from '../platform/wake.js';
+import { wakeSupported } from '../platform/wake.js';
 
 const KEY_FILES = ['./', 'app.css', 'js/main.js', ...['stands', 'chains', 'rules', 'graph', 'streets', 'triggers',
   'events', 'catchments', 'params', 'meta'].map((f) => `data/${f}.json`)];
@@ -40,7 +40,7 @@ export async function gatherProbe(S, nowIso) {
     offlineBootAt: S.offlineBootAt,
     storage: await quiet(storageWorks(nowIso)) || 'fail',
     persisted: await persisted,
-    wakeLock: shiftSupported(),
+    wakeLock: wakeSupported(),
     permission: await perm,
     fixes: fixSummary(S.fixLog), creepAccM: S.data.params.logger.creep_max_accuracy_m,
     battery: await battery,

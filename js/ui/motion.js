@@ -8,7 +8,7 @@ export function renderState(S, view) {
   return {
     view,
     level: top ? top.demand.level : null,
-    bar: `${S.logger ? S.logger.mode : 'idle'}:${!!S.picker}`,
+    bar: `${S.logger ? S.logger.mode : 'idle'}:${!!S.picker}:${S.shift ? (S.shiftView === 'end' ? 'end' : 'on') : 'off'}`, // ADR 0010
     autoLog: S.settings.autoLog !== false,
     firstRun: !!S.firstRun,
     updateReady: !!S.updateReady,

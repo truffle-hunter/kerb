@@ -21,6 +21,7 @@ export function kmMedian(waits) {
 }
 
 import { dublinParts } from './time.js';
+import { shiftSummary, currentShift } from './shift.js';
 
 export function median(xs) {
   const s = xs.filter(Number.isFinite).sort((a, b) => a - b);
@@ -42,7 +43,7 @@ export function computeStats(waits, now, ctx) {
   const P = ctx.params;
   const S = P.stats || { shorter: 0.75, longer: 1.25, stand_min_n: 5, overall_min_n: 3 };
   const startHour = P.demand.service_day_start_hour;
-  const ws = waits.filter((w) => Number.isFinite(w.wait_min));
+  const ws = waits.filter((w) => Number.isFinite(w.wait_min) && !w.off_shift); // off shift: kept, never counted (ADR 0010)
   const ans = answeredOf(ws);
   const overall = median(ws.map((w) => w.wait_min));
 
@@ -61,8 +62,22 @@ export function computeStats(waits, now, ctx) {
     return { band, n: g.length, median: median(g.map((w) => w.wait_min)) };
   });
 
-  let lastShift = null;
-  if (ws.length) {
+  // ADR 0010: with shifts, the last shift and this shift are the real ones (split days, nights past 04:00); without
+  // any shift yet, the last service day (04:00 cut-off) stands in for the last shift.
+  const shifts = ctx.shifts || [];
+  let lastShift = null, thisShift = null;
+  const named = (x) => x && { ...x, name: nameOf(ctx, x.stand) };
+  const ofShift = (sh) => {
+    const m = shiftSummary(sh, waits, now.getTime());
+    return { date: dublinParts(new Date(sh.start)).date, start: m.start, end: m.end, on_min: m.on_min, minutes: m.rank_min,
+      waits: m.waits, fares: m.fares, answered: m.answered, longest: named(m.longest), shortest: named(m.shortest) };
+  };
+  if (shifts.length) {
+    const ended = shifts.filter((x) => x.end);
+    if (ended.length) lastShift = ofShift(ended[ended.length - 1]);
+    const cur = currentShift(shifts);
+    if (cur) thisShift = ofShift(cur);
+  } else if (ws.length) {
     const date = ws.map((w) => serviceDate(w.joined_at, startHour)).sort().pop();
     const g = ws.filter((w) => serviceDate(w.joined_at, startHour) === date);
     const sorted = [...g].sort((a, b) => a.wait_min - b.wait_min);
@@ -81,11 +96,11 @@ export function computeStats(waits, now, ctx) {
   }
 
   return { total: ws.length, unconfirmed: ws.filter((w) => w.confirmed === false).length, answered: ans.length,
-    fares: ans.filter((w) => w.outcome === 'fare').length, overallMedian: overall, lastShift, byStand, byBand,
+    fares: ans.filter((w) => w.outcome === 'fare').length, overallMedian: overall, lastShift, thisShift, byStand, byBand,
     label: (joinedAt) => labels.get(joinedAt) || 'not enough yet', now };
 }
 
 /** Waits the driver still needs to look at (ADR 0008): automatic ones not confirmed, or with no answer that wasn't
  * marked "Don't know". With `now`, only the last 14 days count, so a restored history doesn't flood the chip. */
-export const toCheck = (waits, now = null) => waits.filter((w) => (w.confirmed === false || (w.outcome === 'unknown' && !w.outcome_reviewed))
+export const toCheck = (waits, now = null) => waits.filter((w) => !w.off_shift && (w.confirmed === false || (w.outcome === 'unknown' && !w.outcome_reviewed))
   && (!now || Date.parse(w.joined_at) >= now - 14 * 86400000));

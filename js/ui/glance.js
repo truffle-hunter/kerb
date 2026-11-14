@@ -2,20 +2,39 @@
 import { h, iconButton, fmtKm, legalLine, minutesAgo } from './dom.js';
 import { bearingDeg, cardinal } from '../engine/geo.js';
 import { navUrl } from '../platform/nav.js';
-import { hhmm } from '../engine/time.js';
+import { hhmm, dublinParts } from '../engine/time.js';
 import { backupDue } from '../engine/export.js';
 import { ownHistory, historyLine } from '../engine/history.js';
 import { toCheck } from '../engine/stats.js';
+import { shiftSummary, onShiftMinutes, fatigueStage } from '../engine/shift.js';
+import { dwelling } from '../engine/logger.js';
 
 const WD = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const shortDate = (d) => `${+d.slice(8, 10)} ${MONTHS[+d.slice(5, 7) - 1]}`;
 
+const hm = (min) => `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')}`;
+const plural = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`;
+const minsOn = (S) => Math.max(0, Math.floor((S.now - Date.parse(S.shift.start)) / 60000));
+const stage = (S) => (S.shift ? fatigueStage(onShiftMinutes(S.shifts, S.now.getTime(), S.data.params.shift.fatigue_window_h), S.data.params.shift) : 0);
+
+/** On shift (ADR 0010): a roof-sign block and the time on shift, a 44 px target that opens End shift. The words carry
+ * the state; the amber block only echoes the roof sign. Amber text from 10 h on shift in 24 h. */
+function shiftChip(S, A) {
+  const m = minsOn(S);
+  return h('button', { class: `shiftchip${stage(S) >= 2 ? ' warn' : ''}`, 'data-test': 'shift-chip', onclick: A.openShift,
+    'aria-label': `On shift ${Math.floor(m / 60)} hours ${m % 60} minutes. End shift` },
+  // from 10 h the block gives way to the wider time (and the warn colour), so the icon row stays one line at 360 px
+  m < 600 ? h('i', { class: 'roof', 'aria-hidden': 'true' }) : null, hm(m));
+}
+
 export function header(S, A, parts) {
   const stale = !S.timetable.current || S.eventsStale;
   return h('header', { class: 'top' },
-    h('span', { class: 'clock', 'data-test': 'clock' }, `${parts.time} ${WD[parts.weekday]}`),
+    // on shift the weekday gives way to the shift chip, so the icon row stays one line on a 360 px phone
+    h('span', { class: 'clock', 'data-test': 'clock' }, S.shift ? parts.time : `${parts.time} ${WD[parts.weekday]}`),
+    S.shift ? shiftChip(S, A) : null,
     h('span', { class: 'spacer' }),
     iconButton('ranks', 'All ranks', A.openRanks, 'nav-ranks'),
     iconButton('stats', 'Your stats', A.openStats, 'nav-stats'),
@@ -98,6 +117,8 @@ function standName(S, id) { if (id == null) return "rank not on Kerb's list"; co
 
 export function loggerBar(S, A) {
   const L = S.logger;
+  if (S.shift && S.shiftView === 'end') return endShiftBar(S, A); // from the chip, over any bar
+  if (!S.shift && L.mode === 'idle') return offShiftBar(S, A);
   if (L.mode === 'prompt') {
     return h('footer', { class: 'bar', 'data-test': 'join-bar' },
       h('p', { class: 'q' }, `Joined ${standName(S, L.stand)}?`),
@@ -172,16 +193,55 @@ function idleBar(S, A) {
     reminders(S, A));
 }
 
-/** Quiet reminders on the idle bar (ADR 0008): back up the log (only on this phone), and waits to check. */
+/** End shift (ADR 0010), opened from the chip: parked, two taps; "Keep going" closes it. */
+function endShiftBar(S, A) {
+  return h('footer', { class: 'bar idle shiftbar', 'data-test': 'shift-bar' },
+    h('p', { class: 'q timerstatus', 'data-test': 'shift-status' }, `On shift since ${hhmm(new Date(S.shift.start))} · ${hm(minsOn(S))}`),
+    h('button', { class: 'btn', 'data-test': 'btn-shift-end', onclick: A.endShift }, 'End shift'),
+    quiet(h('button', { class: 'btn quiet', 'data-test': 'btn-shift-keep', onclick: A.keepGoing }, 'Keep going')));
+}
+
+/** Off shift (ADR 0010): nothing is logged. One tap starts the shift; stopped at a rank, the line offers it there (and
+ * the wait still counts from the start of the stop). A shift that ended in the last 12 hours shows its summary, with
+ * "Still on shift" while the end is under 3 hours old. */
+function offShiftBar(S, A) {
+  const P = S.data.params.shift;
+  const last = S.shifts[S.shifts.length - 1];
+  const ended = last && last.end && S.now - Date.parse(last.end_written || last.end) <= P.summary_show_h * 3600000;
+  const d = dwelling(S.logger);
+  const atRank = d && d.seconds >= S.data.params.logger.prompt_s && S.byId[d.stand];
+  let line = atRank ? `At ${S.byId[d.stand].name}. Start shift?` : "Off shift · waits aren't logged";
+  if (ended && !atRank) {
+    const m = shiftSummary(last, S.waits, S.now.getTime()), end = new Date(last.end);
+    // each part stays whole ("1 h 15" never splits across lines); the parts wrap between them
+    line = [`Shift ended ${WD[dublinParts(end).weekday]} ${hhmm(end)}`, `${hm(m.on_min)} on shift`, `${hm(m.rank_min)} at ranks`,
+      plural(m.waits, 'wait'), plural(m.fares, 'fare')].flatMap((t, i) => [i ? ' · ' : null, h('span', { class: 'nowrap' }, t)]);
+  }
+  const canResume = ended && S.now - Date.parse(last.end) <= P.resume_max_min * 60000;
+  return h('footer', { class: 'bar idle shiftbar', 'data-test': ended ? 'ended-bar' : 'offshift-bar' },
+    h('p', { class: 'q timerstatus', 'data-test': 'shift-status' }, line),
+    h('button', { class: 'btn primary big', 'data-test': 'btn-shift-start', onclick: () => A.startShift(atRank ? 'rank_prompt' : 'tap') }, 'Start shift'),
+    canResume ? quiet(h('button', { class: 'btn quiet', 'data-test': 'btn-shift-resume', onclick: A.resumeShift }, 'Still on shift')) : null,
+    reminders(S, A));
+}
+
+const FATIGUE = (P) => [null, `${P.fatigue_h[0]} h on shift in 24 h`, `${P.fatigue_h[1]} h on shift. NTA limit: ${P.fatigue_h[2]} h with passengers`,
+  `${P.fatigue_h[2]} h on shift in 24 h`];
+
+/** Quiet reminders on the idle bar (ADR 0008): back up the log (only on this phone), and waits to check; on shift, the
+ * time on shift from 9 hours in 24 (ADR 0010; never a block). */
 function reminders(S, A) {
-  const b = backupDue(S.waits, S.lastBackup, S.now,
-    { persisted: S.persisted, startHour: S.data.params.demand.service_day_start_hour, events: S.events });
+  const ended = S.shifts.filter((x) => x.end); // ADR 0010: "after each shift" means the real end, where there are shifts
+  const b = backupDue(S.waits, S.lastBackup, S.now, { persisted: S.persisted, startHour: S.data.params.demand.service_day_start_hour, events: S.events,
+    ...(S.shifts.length ? { onShift: !!S.shift, shiftEnd: ended.length ? ended[ended.length - 1].end : null } : {}) });
   const items = [];
   if (b.due) items.push(h('button', { class: 'nudge', 'data-test': 'backup-nudge', onclick: A.openLog },
     `${b.count} wait${b.count === 1 ? '' : 's'} not backed up`));
   // automatic waits stay out of scoring and your history until confirmed; unanswered ones have no outcome
   const n = toCheck(S.waits, S.now).length;
   if (n) items.push(h('button', { class: 'nudge', 'data-test': 'check-nudge', onclick: A.openCheckLog }, `${n} wait${n === 1 ? '' : 's'} to check`));
+  const f = stage(S);
+  if (f) items.push(h('button', { class: 'nudge', 'data-test': 'fatigue-nudge', onclick: A.openStats }, FATIGUE(S.data.params.shift)[f]));
   return items.length ? h('div', { class: 'reminders' }, items) : null;
 }
 export function glance(S, A, parts) {

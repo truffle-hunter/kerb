@@ -22,7 +22,8 @@ function row(S, A, w, label) {
   const near = nearbyStands(S, w.stand, w.near);
   return h('div', { class: 'logrow', 'data-test': 'log-row' },
     h('span', {}, hhmm(new Date(w.joined_at))),
-    h('span', {}, name, w.confirmed === false ? h('span', { class: 'badge' }, ' auto, unconfirmed') : null),
+    h('span', {}, name, w.confirmed === false ? h('span', { class: 'badge' }, ' auto, unconfirmed') : null,
+      w.off_shift ? h('span', { class: 'badge', 'data-test': 'row-off-shift' }, ' off shift') : null), // ADR 0010: kept, not counted
     h('span', {}, `${w.end_uncertain || w.start_uncertain ? 'at least ' : ''}${fmtMin(w.wait_min)}, ${OUT[w.outcome]}`),
     h('span', { class: 'note rowlabel' }, label === 'not enough yet' ? '' : `${label} than usual`.replace('about usual than usual', 'about usual')),
     h('div', { class: 'rowactions' },

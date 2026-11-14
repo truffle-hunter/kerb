@@ -42,7 +42,7 @@ export function checkRows(p) {
     !p.fixes.n ? r('speed', 'Speed from the phone', 'todo', 'No reading yet')
       : p.fixes.speedN ? r('speed', 'Speed from the phone', 'pass', `Reported (${p.fixes.speedN} of ${p.fixes.n} readings)`)
         : r('speed', 'Speed from the phone', 'info', 'Not reported: moving up the rank is estimated from position'),
-    p.wakeLock ? r('wake', 'Screen stays on', 'pass', 'Shift mode can keep the screen on')
+    p.wakeLock ? r('wake', 'Screen stays on', 'pass', "Kerb can keep the screen on while you're on shift")
       : r('wake', 'Screen stays on', 'unsupported', "Not on this browser: set a long screen timeout in the phone's settings"),
     d.timetableCurrent && !d.eventsStale
       ? r('data', 'Data up to date', 'pass', `Built ${d.built}; timetables to ${d.timetableTo}; events checked ${d.eventsUpdated}`)

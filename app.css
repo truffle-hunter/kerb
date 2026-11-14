@@ -46,7 +46,7 @@ b, strong { font-weight: var(--w-bold); }
 #app > main { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 
 /* Header line */
-.top { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--s3); padding: var(--s2) var(--s4) 0; min-height: 48px; }
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--s1); padding: var(--s2) var(--s4) 0; min-height: 48px; }  /* 44 px icon boxes already space the icons */
 .top .spacer { flex: 1; }
 .top .clock { font-variant-numeric: tabular-nums; font-weight: var(--w-bold); }
 .top .marker, .top .datastate { color: var(--ink-dim); font-variant-numeric: tabular-nums; }
@@ -139,6 +139,15 @@ b, strong { font-weight: var(--w-bold); }
   border-radius: calc(var(--radius-m) - var(--s1)); }
 .modeswitch .seg.on { color: var(--ink); font-weight: var(--w-bold); }
 .modeswitch .seg:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+/* Shifts (ADR 0010): off shift, the ended summary and End shift share the idle bar's grid; everything spans the row. */
+.bar.shiftbar > .q.timerstatus, .bar.shiftbar > .btn { grid-column: 1 / -1; }
+.bar.shiftbar > .btn:not(.primary) { width: 100%; }
+/* The on-shift chip: a static roof-sign block and the time on shift. The words carry the state. */
+.shiftchip { display: inline-flex; align-items: center; gap: var(--s1); min-width: 44px; min-height: 44px; padding: 0 var(--s1);
+  border: 0; border-radius: var(--radius-s); background: transparent; color: var(--ink); cursor: pointer; white-space: nowrap;
+  font-weight: var(--w-bold); font-variant-numeric: tabular-nums; }
+.shiftchip .roof { display: block; width: calc(2.5 * var(--s1)); height: calc(1.5 * var(--s1)); border-radius: var(--radius-xs); background: var(--accent); }
+.shiftchip.warn { color: var(--warn); }
 /* Reminders (ADR 0008): quiet lines on the idle bar, still full-size tap targets. */
 .reminders { display: flex; flex-wrap: wrap; gap: 0 var(--s4); margin: calc(-1 * var(--s1)) calc(-1 * var(--s2)) 0; }
 .nudge { text-align: left; background: none; border: 0; color: var(--ink-dim); font: inherit; font-size: var(--t0); min-height: 44px;
@@ -243,8 +252,8 @@ textarea.report { font: inherit; font-size: var(--t0); line-height: var(--lh0); 
 .a-first > .overlay .card { animation: k-sheet var(--d2) var(--ease-in) var(--a-first, 0ms); }
 .a-update [data-test=update-ready] { animation: k-drop var(--d1) var(--ease-in) var(--a-update, 0ms); }
 /* Press feedback: a small give under the thumb. */
-.btn, .go, .iconbtn, .alt, .rankrow, .nudge, .modeswitch .seg { transition: transform var(--d0) var(--ease-in); }
-.btn:not(:disabled):active, .go:active, .iconbtn:active, .alt:active, .rankrow:active, .nudge:active, .modeswitch .seg:active { transform: scale(0.97); }
+.btn, .go, .iconbtn, .alt, .rankrow, .nudge, .shiftchip, .modeswitch .seg { transition: transform var(--d0) var(--ease-in); }
+.btn:not(:disabled):active, .go:active, .iconbtn:active, .alt:active, .rankrow:active, .nudge:active, .shiftchip:active, .modeswitch .seg:active { transform: scale(0.97); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

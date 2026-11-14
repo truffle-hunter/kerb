@@ -1,6 +1,6 @@
 // Settings (spec §8) and attribution.
 import { h, iconButton } from './dom.js';
-import { shiftSupported } from '../platform/wake.js';
+import { wakeSupported } from '../platform/wake.js';
 
 const opt = (value, label, current) => h('option', { value, selected: value === current }, label);
 
@@ -20,8 +20,8 @@ export function settings(S, A, parts) {
       h('label', {}, 'Theme',
         h('select', { 'data-test': 'set-theme', onchange: (e) => A.setSetting('theme', e.target.value) },
           opt('auto', 'Automatic (dark after sunset)', st.theme), opt('dark', 'Night', st.theme), opt('light', 'Day / low sun', st.theme))),
-      h('label', { class: 'check' }, h('input', { type: 'checkbox', 'data-test': 'set-shift', checked: st.shift, disabled: !shiftSupported(), onchange: (e) => A.setSetting('shift', e.target.checked) }),
-        shiftSupported() ? 'Shift mode: keep the screen on while Kerb is open' : 'Shift mode is not supported on this browser'),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', 'data-test': 'set-awake', checked: st.keepAwake, disabled: !wakeSupported(), onchange: (e) => A.setSetting('keepAwake', e.target.checked) }),
+        wakeSupported() ? 'Keep the screen on while on shift' : "Keeping the screen on isn't supported on this browser"),
       h('label', {}, 'Live trains and trams relay (optional, empty = off)',
         h('input', { type: 'url', 'data-test': 'set-relay', value: st.relay || '', placeholder: 'https://…', onchange: (e) => A.setSetting('relay', e.target.value.trim()) })),
       h('h3', {}, 'Phone check'),

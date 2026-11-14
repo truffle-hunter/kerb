@@ -4,7 +4,7 @@ Which Dublin taxi rank to head for now: the stands that are legal right now, the
 
 **Live:** https://truffle-hunter.github.io/kerb/
 
-This repository holds only the published app: static files, data bundle `d8b35ac0945c`. There are no wait times in minutes: nobody has measured waits at Dublin ranks yet, so Kerb shows likely demand, never minutes.
+This repository holds only the published app: static files, data bundle `20af475f6f6b`. There are no wait times in minutes: nobody has measured waits at Dublin ranks yet, so Kerb shows likely demand, never minutes.
 
 ## Data and licences
 - Stand locations come from Dublin City Council's Taxi Bye-Laws 2015 (all four schedules), placed on the map from open data. None has been checked at the kerb.
