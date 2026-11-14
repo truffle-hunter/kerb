@@ -2,8 +2,16 @@
 import { h, iconButton, legalLine, fmtKm } from './dom.js';
 import { status } from '../engine/legal.js';
 import { navUrl } from '../platform/nav.js';
+import { ownHistory, historyLine, fewLine } from '../engine/history.js';
 
 const TIER = { A: 'placed from an exact open-data anchor', B: 'placed from an approximate anchor', C: 'approximate: the anchor is not in open data' };
+
+/** The driver's own past waits here (ADR 0008): the summary from 3 confirmed waits, the waits themselves below. */
+function ownLine(S, id) {
+  const hh = ownHistory(S.waits, id, S.now);
+  const line = historyLine(hh) || fewLine(hh);
+  return line ? h('p', { class: 'hist', 'data-test': 'detail-history' }, line) : null;
+}
 
 export function detail(S, A, id, parts) {
   const s = S.byId[id];
@@ -21,6 +29,9 @@ export function detail(S, A, id, parts) {
       h('h2', {}, s.name),
       h('p', { 'data-test': 'detail-status' }, legalLine(st) === st.why ? `${st.why}.` : `${legalLine(st)}. ${st.why}.`),
       km ? h('p', {}, `${fmtKm(km.km, km.approx)} by road from you.`) : null,
+      ownLine(S, id),
+      s.access === 'daa_permit' ? h('p', { class: S.settings.permit ? '' : 'warn', 'data-test': 'detail-permit' }, S.settings.permit
+        ? 'Airport rank: you hold a daa permit (Settings).' : 'Airport rank: only for drivers with a daa permit. Turn it on in Settings if you hold one.') : null,
       s.head ? h('canvas', { class: 'mapbox', 'data-test': 'map', 'data-stand': id, width: 640, height: 396, 'aria-label': `Map of the kerb at ${s.name}` }) : null,
       s.head ? h('a', { class: 'go', href: navUrl(S.settings.nav, s.head, s.name), target: '_blank', rel: 'noopener', 'data-test': 'detail-go' }, 'Navigate') : null,
       h('h3', {}, 'Where it is'),

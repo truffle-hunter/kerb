@@ -155,6 +155,27 @@ button, select, input, a.button { font: inherit; color: inherit; }
 textarea.report { font: inherit; font-size: 14px; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
   border-radius: var(--radius-s); padding: var(--s2); width: 100%; resize: vertical; }
 /* Export reminder: one quiet line on the idle bar, still a full-size tap target. */
-.nudge { grid-column: 1 / -1; justify-self: start; text-align: left; background: none; border: 0; color: var(--ink-dim); font: inherit; font-size: var(--t0); min-height: 44px;
+.reminders { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 0 var(--s4); }
+.nudge { text-align: left; background: none; border: 0; color: var(--ink-dim); font: inherit; font-size: var(--t0); min-height: 44px;
   text-decoration: underline; text-underline-offset: 3px; cursor: pointer; padding: 0 var(--s2); }
 .nudge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Restore from backup: a file input dressed as a button; the input stays keyboard-focusable. */
+.filebtn { position: relative; align-self: flex-start; }
+.filebtn input { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; }
+.filebtn:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Own history (ADR 0008): the driver's past waits; dimmer than the demand line, which stays the lead. */
+.rec .hist { color: var(--ink-dim); }
+.alt .althist { grid-column: 1 / -1; color: var(--ink-dim); font-size: var(--t0); margin-top: calc(-1 * var(--s2)); }
+.sheet .hist { font-weight: 600; }
+/* All ranks (ADR 0008): one row per stand, a full-width tap target. */
+.ranklist { display: grid; gap: var(--s2); }
+.rankrow { all: unset; box-sizing: border-box; cursor: pointer; display: grid; grid-template-columns: 1fr auto; gap: var(--s1) var(--s3);
+  min-height: 56px; padding: var(--s2) var(--s3); background: var(--panel); border-radius: var(--radius-s); }
+.rankrow[hidden] { display: none; }
+.rankrow:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rankrow .rankname { font-weight: 600; font-size: 18px; }
+.rankrow .km { color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+.rankrow .rankstreet, .rankrow .ranklegal, .rankrow .rankhist { grid-column: 1 / -1; }
+.sheet input[type=search] { font: inherit; font-size: 18px; min-height: 48px; padding: 0 var(--s3); color: var(--ink);
+  background: var(--panel); border: 2px solid var(--line); border-radius: var(--radius-m); width: 100%; }
+.sheet input[type=search]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

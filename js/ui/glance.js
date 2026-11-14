@@ -3,7 +3,9 @@ import { h, iconButton, fmtKm, legalLine, minutesAgo } from './dom.js';
 import { bearingDeg, cardinal } from '../engine/geo.js';
 import { navUrl } from '../platform/nav.js';
 import { hhmm } from '../engine/time.js';
-import { exportDue } from '../engine/export.js';
+import { backupDue } from '../engine/export.js';
+import { ownHistory, historyLine } from '../engine/history.js';
+import { toCheck } from '../engine/stats.js';
 
 const WD = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -14,13 +16,16 @@ export function header(S, A, parts) {
   const stale = !S.timetable.current || S.eventsStale;
   return h('header', { class: 'top' },
     h('span', { class: 'clock', 'data-test': 'clock' }, `${parts.time} ${WD[parts.weekday]}`),
-    S.online ? null : h('span', { class: 'offline', 'data-test': 'offline' }, 'Offline'),
     h('span', { class: 'spacer' }),
+    iconButton('ranks', 'All ranks', A.openRanks, 'nav-ranks'),
     iconButton('stats', 'Your stats', A.openStats, 'nav-stats'),
     iconButton('log', 'Wait log', A.openLog, 'nav-log'),
     iconButton('settings', 'Settings', A.openSettings, 'nav-settings'),
-    h('div', { class: 'row2' }, // second line: how sure, and how fresh the data is (keeps the icon row on one line on small phones)
-      h('span', { class: 'marker', 'data-test': 'marker' }, 'Guess · no driver data yet'),
+    h('div', { class: 'row2' }, // second line: offline, how sure, how fresh the data is (keeps the icon row on one line)
+      S.online ? null : h('span', { class: 'offline', 'data-test': 'offline' }, 'Offline'),
+      // ADR 0008: once the driver has a confirmed wait, the minutes on screen are theirs; demand stays a guess
+      h('span', { class: 'marker', 'data-test': 'marker' },
+        S.waits.some((w) => w.confirmed !== false) ? 'Demand is a guess · waits are yours' : 'Guess · no driver data yet'),
       h('span', { class: stale ? 'offline' : 'datastate', 'data-test': 'data-state' },
         stale ? 'Data out of date' : `Data ${shortDate(S.data.meta.built_at)}`),
       S.updateReady ? h('button', { class: 'btn primary small', 'data-test': 'update-ready', onclick: () => location.reload() }, 'Update ready: reload') : null));
@@ -49,7 +54,14 @@ function recBlock(S, A, from) {
     h('p', { class: 'big', 'data-test': 'rec-legal' }, legalLine(top.status)),
     h('p', { class: 'big', 'data-test': 'rec-reason' }, top.demand.reason),
     caution(S, s.id),
+    hist(S, s.id, 'big hist', 'rec-history'),
     rep ? h('p', { class: 'report', 'data-test': 'rec-report' }, rep) : null);
+}
+
+/** The driver's own past waits at a stand (ADR 0008), or nothing under 3 confirmed waits. */
+function hist(S, id, cls, test) {
+  const line = historyLine(ownHistory(S.waits, id, S.now));
+  return line ? h('p', { class: cls, 'data-test': test }, line) : null;
 }
 
 const CAUTION_ORDER = ['relocation_note', 'works_note', 'capacity_note', 'access_note'];
@@ -66,7 +78,8 @@ function restBlock(S, A) {
       S.loc === 'off' ? "Location off, so distances are from O'Connell Bridge" : "Finding your location; distances are from O'Connell Bridge for now"),
     S.storageOk ? null : h('p', { class: 'warn', 'data-test': 'storage-warning' }, "Logs can't be saved on this browser: waits you log are lost when Kerb closes."),
     S.recs.slice(1).map((r) => h('button', { class: 'alt', 'data-test': 'alt', 'data-stand': r.stand.id, onclick: () => A.detail(r.stand.id) },
-      h('span', {}, r.stand.name), h('span', { class: 'km' }, fmtKm(r.km, r.approx)), h('span', { class: 'lvl' }, r.demand.level))),
+      h('span', {}, r.stand.name), h('span', { class: 'km' }, fmtKm(r.km, r.approx)), h('span', { class: 'lvl' }, r.demand.level),
+      hist(S, r.stand.id, 'althist', 'alt-history'))),
     h('p', { class: 'next', 'data-test': 'next-hour' }, !S.timetable.current
       ? `Timetables out of date (they ran to ${shortDate(S.timetable.to)}): trains, trams and ferries not shown`
       : next ? ['Next hour: ', h('b', {}, next.label)] : 'Nothing scheduled in the next hour'));
@@ -143,14 +156,20 @@ function idleBar(S, A) {
       seg('Manual', !auto, () => A.setMode(false), 'mode-manual')),
     h('p', { class: 'q timerstatus', 'data-test': 'timer-status' }, status),
     h('button', { class: auto ? 'btn' : 'btn primary big', 'data-test': 'btn-start', onclick: A.start }, auto ? 'Start now' : 'Start rank timer'),
-    exportNudge(S, A));
+    reminders(S, A));
 }
 
-/** Once a week, a quiet reminder to export the log for scoring (decision 2026-11-14). Nothing is sent by itself. */
-function exportNudge(S, A) {
-  const d = exportDue(S.waits, S.lastExport, S.now);
-  return d.due ? h('button', { class: 'nudge', 'data-test': 'export-nudge', onclick: A.openLog },
-    `Log not exported for ${d.days} days: open the Log`) : null;
+/** Quiet reminders on the idle bar (ADR 0008): back up the log (only on this phone), and waits to check. */
+function reminders(S, A) {
+  const b = backupDue(S.waits, S.lastBackup, S.now,
+    { persisted: S.persisted, startHour: S.data.params.demand.service_day_start_hour, events: S.events });
+  const items = [];
+  if (b.due) items.push(h('button', { class: 'nudge', 'data-test': 'backup-nudge', onclick: A.openLog },
+    `${b.count} wait${b.count === 1 ? '' : 's'} not backed up`));
+  // automatic waits stay out of scoring and your history until confirmed; unanswered ones have no outcome
+  const n = toCheck(S.waits, S.now).length;
+  if (n) items.push(h('button', { class: 'nudge', 'data-test': 'check-nudge', onclick: A.openCheckLog }, `${n} wait${n === 1 ? '' : 's'} to check`));
+  return items.length ? h('div', { class: 'reminders' }, items) : null;
 }
 export function glance(S, A, parts) {
   const from = S.fix ? [S.fix.lon, S.fix.lat] : S.ocb;

@@ -55,7 +55,7 @@ export function phoneCheck(S, A, parts) {
     h('header', { class: 'top' }, iconButton('back', 'Back to settings', A.openSettings, 'nav-back'), h('span', { class: 'clock' }, parts.time)),
     h('main', { class: 'sheet', 'data-test': 'phone-check' },
       h('h2', {}, 'Phone check'),
-      h('p', {}, 'Is this phone ready for a shift? Open Kerb from the home screen, stand outside for a minute, then check. Nothing is sent: copy the report and send it yourself.'),
+      h('p', {}, 'Is this phone ready for a shift? Open Kerb from the home screen, stand outside for a minute, then check. Nothing is sent from here: Copy report gives you the text to keep or share.'),
       !c ? h('p', { class: 'note' }, 'Checking…') : [
         h('div', { class: 'checklist' }, c.rows.map((r) => h('div', { class: `checkrow s-${r.state}`, 'data-test': 'check-row', 'data-key': r.key, 'data-state': r.state },
           h('span', { class: 'checkstate' }, STATE_WORD[r.state]),

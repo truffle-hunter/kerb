@@ -30,7 +30,7 @@ export function median(xs) {
 }
 
 const BANDS = ['00–04', '04–08', '08–12', '12–16', '16–20', '20–24'];
-const serviceDate = (iso, startHour) => dublinParts(new Date(Date.parse(iso) - startHour * 3600000)).date;
+export const serviceDate = (iso, startHour) => dublinParts(new Date(Date.parse(iso) - startHour * 3600000)).date;
 const answeredOf = (ws) => ws.filter((w) => w.outcome === 'fare' || w.outcome === 'left_empty');
 export const NOT_LISTED = "Rank not on Kerb's list";
 const nameOf = (ctx, id) => (id == null ? NOT_LISTED : ctx.byId[id] ? ctx.byId[id].name : id);
@@ -84,3 +84,8 @@ export function computeStats(waits, now, ctx) {
     fares: ans.filter((w) => w.outcome === 'fare').length, overallMedian: overall, lastShift, byStand, byBand,
     label: (joinedAt) => labels.get(joinedAt) || 'not enough yet', now };
 }
+
+/** Waits the driver still needs to look at (ADR 0008): automatic ones not confirmed, or with no answer that wasn't
+ * marked "Don't know". With `now`, only the last 14 days count, so a restored history doesn't flood the chip. */
+export const toCheck = (waits, now = null) => waits.filter((w) => (w.confirmed === false || (w.outcome === 'unknown' && !w.outcome_reviewed))
+  && (!now || Date.parse(w.joined_at) >= now - 14 * 86400000));

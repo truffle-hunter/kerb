@@ -1,4 +1,6 @@
 // Export of the wait log (spec §7.5): JSON schema kerb-log/1 (read by tools/score/score_waits.py) and a CSV of waits.
+// The JSON export is also the driver's backup (ADR 0008).
+import { serviceDate } from './stats.js';
 export const CSV_HEADER = 'stand,joined_at,ended_at,wait_min,outcome,censored,followed_top_pick,join_source,cabs_ahead,people,demand_level,demand_score,model,params,bundle,confirmed,creeps,left_via,cabs_ahead_est,detect';
 
 export function toJSON({ events, waits, meta, device }) {
@@ -20,13 +22,23 @@ export function toCSV(waits) {
   return [CSV_HEADER, ...rows].join('\n') + '\n';
 }
 
-/** Export reminder (decision 2026-11-14): due when finished waits not yet exported for scoring are `days` old,
- * counted from the last export, or from the first such wait if the driver never exported. Nothing is sent. */
-export function exportDue(waits, lastExport, now, days = 7) {
-  const after = lastExport ? Date.parse(lastExport) : -Infinity;
-  const fresh = waits.filter((w) => Date.parse(w.joined_at) > after);
-  if (!fresh.length) return { due: false, days: 0, count: 0 };
-  const since = lastExport ? after : Math.min(...fresh.map((w) => Date.parse(w.joined_at)));
-  const age = Math.floor((now - since) / 86400000);
-  return { due: age >= days, days: age, count: fresh.length };
+/** Backup reminder (ADR 0008). Waits not in the last backup are counted by when they ended (a wait still open at
+ * backup time isn't in it). Due when 20 have built up, when the oldest is 7 days old (counted from that wait, so a
+ * long break doesn't nag at once), or, where the phone may clear storage (persisted === false), once its shift is
+ * over. Nothing is sent: the driver keeps the file. */
+export function backupDue(waits, lastBackup, now, { persisted = null, startHour = 4, days = 7, count = 20, events = [] } = {}) {
+  const after = lastBackup ? Date.parse(lastBackup) : -Infinity;
+  // changed since the backup: waits that ended after it, and waits confirmed, answered or edited after it (review fix)
+  const changed = new Map();
+  for (const w of waits) { const t = Date.parse(w.ended_at || w.joined_at); if (t > after) changed.set(w.joined_at, t); }
+  for (const e of events) {
+    const t = Date.parse(e.t);
+    if (e.wait && ['confirm', 'edit', 'void'].includes(e.type) && t > after) changed.set(e.wait, Math.min(changed.get(e.wait) ?? t, t));
+  }
+  if (!changed.size) return { due: false, days: 0, count: 0 };
+  const oldest = Math.min(...changed.values());
+  const age = Math.floor((now - oldest) / 86400000);
+  const shiftOver = persisted === false
+    && serviceDate(new Date(oldest).toISOString(), startHour) < serviceDate(new Date(now).toISOString(), startHour);
+  return { due: changed.size >= count || age >= days || shiftOver, days: age, count: changed.size };
 }

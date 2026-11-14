@@ -28,7 +28,7 @@ export function settings(S, A, parts) {
       h('p', {}, 'Check this phone is ready for a shift: installed, works with no signal, location sharp enough to tell ranks apart.'),
       h('button', { class: 'btn', 'data-test': 'set-phonecheck', onclick: A.openCheck }, 'Check this phone'),
       h('p', { class: 'note', 'data-test': 'device-code' },
-        `Device code: ${String(S.device || '').slice(0, 8)}. It is in every export, so logs can be told apart without your name.`),
+        `Device code: ${String(S.device || '').slice(0, 8)}. It labels your backups.`),
       h('h3', {}, 'About the estimates'),
       h('p', {}, "Kerb shows where demand is likely, never how long you'll wait: no one has measured waits at Dublin ranks yet. Every weight is a guess until drivers log real waits."),
       h('h3', {}, 'Data'),

@@ -36,7 +36,7 @@ export function checkRows(p) {
     p.offlineBootAt ? r('offline-start', 'Opens with no signal', 'pass', `Yes, on ${p.offlineBootAt.slice(0, 10)}`)
       : r('offline-start', 'Opens with no signal', 'todo', 'Not tried yet: turn on aeroplane mode, close Kerb fully, open it again, then come back here'),
     p.storage !== 'ok' ? r('storage', 'Saves your log', 'fail', "Can't save on this phone: export your log before closing Kerb")
-      : p.persisted === false ? r('storage', 'Saves your log', 'warn', 'Saves it, but the phone may clear it when space runs low: export weekly')
+      : p.persisted === false ? r('storage', 'Saves your log', 'warn', "Saves it, but this phone may clear Kerb's data if space runs low: back up after each shift")
         : r('storage', 'Saves your log', 'pass', 'Saved on this phone'),
     locationRow(p),
     !p.fixes.n ? r('speed', 'Speed from the phone', 'todo', 'No reading yet')

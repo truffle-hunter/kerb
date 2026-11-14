@@ -19,6 +19,7 @@ const ICONS = {
   settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>',
   back: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>',
   stats: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V11M12 20V5M19 20v-6"/></svg>',
+  ranks: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6-5.4-6-10.2a6 6 0 0112 0C18 15.6 12 21 12 21z"/><circle cx="12" cy="10.5" r="2.2"/></svg>',
 };
 export function iconButton(name, label, onclick, test) {
   const b = h('button', { class: 'iconbtn', 'aria-label': label, title: label, onclick, 'data-test': test });

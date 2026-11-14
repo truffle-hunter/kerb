@@ -11,6 +11,7 @@ import { recommend, score } from './engine/demand.js';
 import { upcoming, nextImportant, triggersAround, timetableStatus } from './engine/triggers.js';
 import { initial as loggerInitial, step as loggerStep, deriveWaits, detectStand, autoStartFor } from './engine/logger.js';
 import { toJSON, toCSV } from './engine/export.js';
+import { parseBackup, mergeEvents, closeDanglingWaits } from './engine/backup.js';
 import { sunElevation } from './ui/dom.js';
 import { glance } from './ui/glance.js';
 import { detail } from './ui/detail.js';
@@ -19,6 +20,7 @@ import { settings } from './ui/settings.js';
 import { firstrun } from './ui/firstrun.js';
 import { stats as statsView } from './ui/stats.js';
 import { phoneCheck, gatherProbe } from './ui/phonecheck.js';
+import { ranks } from './ui/ranks.js';
 import { checkRows, reportText } from './engine/phonecheck.js';
 import { drawDetailMap } from './ui/map.js';
 import { fetchWeather } from './platform/weather.js';
@@ -40,7 +42,7 @@ const S = {
   settings: { nav: 'google', permit: false, theme: 'auto', shift: false, relay: '', autoLog: true },
   view: 'glance', detailId: null, weather: null, live: null, storageOk: true, firstRun: false, lastTop: null, changed: false,
   online: navigator.onLine, picker: false, openSource: null, timetable: { current: true, to: null }, eventsStale: false, updateReady: false, nearby: [], cabsAhead: null, lastReport: null, ocb: OCB, device: null,
-  fixLog: [], offlineBootAt: null, lastExport: null, check: null, // Phone check and export reminder (2026-11-14)
+  fixLog: [], offlineBootAt: null, lastBackup: null, persisted: null, check: null, restoreMsg: null, rankQuery: '', detailFrom: 'glance', logFilter: null, scroll: {}, renderedView: null, // Phone check, backup (ADR 0008)
 };
 let worker = null, workerReady = false, workerFailed = false, loc = null, weatherAt = -Infinity, relayAt = -Infinity;
 const hooks = { afterRender: [] };
@@ -222,9 +224,11 @@ function onTick() {
 
 const at = () => clockNow();
 const A = {
-  detail(id) { S.view = 'detail'; S.detailId = id; render(); },
-  back() { S.view = 'glance'; render(); },
-  openLog() { S.view = 'log'; render(); },
+  detail(id, from = 'glance') { S.view = 'detail'; S.detailId = id; S.detailFrom = from; S.scroll[`detail:${id}`] = 0; render(); },
+  back() { S.view = S.view === 'detail' && S.detailFrom === 'ranks' ? 'ranks' : 'glance'; render(); }, // detail returns where it came from
+  openRanks() { S.view = 'ranks'; render(); },
+  openLog() { S.view = 'log'; S.logFilter = null; render(); },
+  openCheckLog() { S.view = 'log'; S.logFilter = 'check'; render(); }, // the review chip: only waits to check
   openSettings() { S.view = 'settings'; render(); },
   join(id) { feedLogger({ type: 'tap_join', stand: id, t: at() }); S.picker = false; render(); },
   start() { feedLogger({ type: 'tap_start', t: at() }); S.picker = false; render(); }, // ADR 0006: rank detected, no list
@@ -288,15 +292,45 @@ const A = {
   async exportJSON() {
     const meta = { model: MODEL, params_version: S.data.params.version, bundle_version: S.data.meta.bundle_version, exported_at: at().toISOString() };
     const how = await exportFile(`kerb-waits-${dublinParts(at()).date}.json`, toJSON({ events: S.events, waits: S.waits, meta, device: S.device }), 'application/json');
-    if (how !== 'cancelled') { S.lastExport = at().toISOString(); store.setSetting('lastExport', S.lastExport); render(); }
+    if (how !== 'cancelled') { S.lastBackup = at().toISOString(); store.setSetting('lastBackup', S.lastBackup); render(); }
+  },
+  async restore(file) { // ADR 0008: add the backup's events this phone doesn't have; the same file twice changes nothing
+    if (!file) return;
+    if (S.logger.mode !== 'idle') { S.restoreMsg = 'Finish the current wait first, then restore.'; render(); return; }
+    let b;
+    try { b = parseBackup(await file.text()); } catch (e) {
+      S.restoreMsg = "This isn't a Kerb backup file. Nothing was changed."; render(); return;
+    }
+    const wasEmpty = S.events.length === 0, before = S.waits.length;
+    const m = mergeEvents(S.events, b.events, { localDevice: S.device, fileDevice: b.device });
+    // a wait left open in the backup (taken mid-wait) is closed at its last sighting, not resumed weeks later
+    m.events = closeDanglingWaits(m.events);
+    if (!m.added) { S.restoreMsg = 'Nothing new: everything in this backup is already on this phone.'; render(); return; }
+    try { await store.replaceAll(m.events); } catch (e) {
+      S.restoreMsg = "Couldn't save the restored log on this phone. Nothing was changed."; render(); return;
+    }
+    S.events = m.events;
+    S.waits = deriveWaits(S.events);
+    if (m.device && m.device !== S.device) { S.device = m.device; store.setSetting('device', S.device); }
+    if (wasEmpty && b.exportedAt) { S.lastBackup = b.exportedAt; store.setSetting('lastBackup', S.lastBackup); } // it is in that file
+    const added = S.waits.length - before, already = Math.max(0, deriveWaits(b.events).length - added);
+    S.restoreMsg = `Restored ${added} wait${added === 1 ? '' : 's'}${already ? ` (${already} ${already === 1 ? 'was' : 'were'} already here)` : ''}.`;
+    render();
   },
   async exportCSV() { await exportFile(`kerb-waits-${dublinParts(at()).date}.csv`, toCSV(S.waits), 'text/csv'); },
   firstRunOk() { S.firstRun = false; store.setSetting('seenFirstRun', true); render(); },
 };
 
+const viewKey = () => (S.view === 'detail' ? `detail:${S.detailId}` : S.view);
+
 function render() {
+  // Typing in the ranks filter: don't rebuild the screen under the keyboard (iOS drops it); the list filters in place.
+  if (S.view === 'ranks' && S.renderedView === 'ranks' && document.activeElement
+      && document.activeElement.dataset && document.activeElement.dataset.test === 'ranks-filter') return;
   stats.renders++;
   const root = document.getElementById('app');
+  const before = root.querySelector(':scope > main'); // keep each screen's scroll position across re-renders (review fix)
+  if (before && S.renderedView) S.scroll[S.renderedView] = before.scrollTop;
   const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.test : null;
   const parts = { ...dublinParts(S.now), time: hhmm(S.now) };
   if (S.view === 'glance' && S.data) { // which rank the idle bar names, and whether Auto will start by itself
@@ -306,8 +340,12 @@ function render() {
   const view = S.view === 'detail' ? detail(S, A, S.detailId, parts) : S.view === 'log' ? log(S, A, parts)
     : S.view === 'stats' ? statsView(S, A, parts)
     : S.view === 'check' ? phoneCheck(S, A, parts)
+    : S.view === 'ranks' ? ranks(S, A, parts)
     : S.view === 'settings' ? settings(S, A, parts) : glance(S, A, parts);
   root.replaceChildren(...view, ...(S.firstRun ? [firstrun(A)] : []));
+  S.renderedView = viewKey();
+  const after = root.querySelector(':scope > main');
+  if (after && S.scroll[S.renderedView]) after.scrollTop = S.scroll[S.renderedView];
   S.changed = false;
   if (focused) { const el = root.querySelector(`[data-test="${focused}"]`); if (el) el.focus(); }
   if (S.view === 'detail') drawDetailMap(root, S).catch(() => {}); // map is an aid; the sheet works without it
@@ -330,7 +368,7 @@ async function boot() {
   S.firstRun = !saved.seenFirstRun;
   S.device = saved.device || (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
   if (!saved.device) store.setSetting('device', S.device);
-  S.lastExport = saved.lastExport || null;
+  S.lastBackup = saved.lastBackup || saved.lastExport || null; // lastExport: the name before ADR 0008
   // Phone check: remember that Kerb has started with no signal (the offline test a driver does in aeroplane mode)
   S.offlineBootAt = navigator.onLine ? saved.offlineBootAt || null : clockNow().toISOString();
   if (!navigator.onLine) store.setSetting('offlineBootAt', S.offlineBootAt);
@@ -351,7 +389,10 @@ async function boot() {
   S.ready = true;
   refreshWeather();
   refreshRelay();
-  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  // ADR 0008: whether the phone promises to keep Kerb's storage decides how soon the backup reminder comes
+  if (navigator.storage && navigator.storage.persist) {
+    navigator.storage.persist().then((v) => { S.persisted = v; render(); }).catch(() => {});
+  }
   if ('serviceWorker' in navigator) {
     let seen = !!navigator.serviceWorker.controller; // the first install's claim is not an update
     navigator.serviceWorker.addEventListener('controllerchange', () => {

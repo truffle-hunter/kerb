@@ -403,6 +403,7 @@ export function deriveWaits(events) {
     } else if (e.type === 'cancel' || (e.type === 'void' && e.wait === w.joined_at)) {
       w = null;
     } else if (e.type === 'outcome') {
+      if (e.uncertain) w.end_uncertain = true; // e.g. closed on restore at its last sighting (ADR 0008)
       w.ended_at = w._fareIn || w._depart || e.end_hint || e.t;
       w.wait_min = (Date.parse(w.ended_at) - Date.parse(w.joined_at)) / 60000;
       w.outcome = e.outcome;
@@ -426,6 +427,7 @@ export function deriveWaits(events) {
       if (e.field === 'stand') x.stand = e.value;
       if (e.field === 'outcome' && ['fare', 'left_empty', 'unknown'].includes(e.value)) {
         x.outcome = e.value;
+        x.outcome_reviewed = true; // "Don't know" is an answer too (ADR 0008 review fix)
         x.censored = e.value !== 'fare' || x.end_uncertain || x.start_uncertain;
       }
     }

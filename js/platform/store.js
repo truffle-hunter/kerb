@@ -42,3 +42,13 @@ export async function setSetting(key, value) {
   if (!db) { mem.settings[key] = value; return; }
   await req(db.transaction('settings', 'readwrite').objectStore('settings').put(value, key));
 }
+
+/** Replace the whole event log in one transaction (restore from backup, ADR 0008): all or nothing. */
+export async function replaceAll(events) {
+  if (!db) { mem.events = [...events]; return; }
+  const tx = db.transaction('events', 'readwrite');
+  const os = tx.objectStore('events');
+  os.clear();
+  for (const e of events) os.add(e);
+  await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error); });
+}
