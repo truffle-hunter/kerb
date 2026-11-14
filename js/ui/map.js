@@ -29,12 +29,11 @@ export function drawMap(canvas, { lines, stand, you }) {
   const P = ([lon, lat]) => [W / 2 + (lon - c[0]) * kx * scale, H / 2 - (lat - c[1]) * KY * scale];
   const dLon = (W / 2 / scale) / kx, dLat = (H / 2 / scale) / KY;
   const view = [c[0] - dLon, c[1] - dLat, c[0] + dLon, c[1] + dLat];
-  ctx.fillStyle = col('--panel');
+  ctx.fillStyle = col('--surface');
   ctx.fillRect(0, 0, W, H);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.strokeStyle = col('--ink-dim');
-  ctx.globalAlpha = 0.55;
+  ctx.strokeStyle = col('--map-road'); // solid, so streets read the same on every ground (ADR 0009)
   for (const l of lines) {
     const b = l.box;
     if (b[2] < view[0] || b[0] > view[2] || b[3] < view[1] || b[1] > view[3]) continue;
@@ -43,7 +42,6 @@ export function drawMap(canvas, { lines, stand, you }) {
     l.pts.forEach((p, i) => { const [x, y] = P(p); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
     ctx.stroke();
   }
-  ctx.globalAlpha = 1;
   const line = stand.line && stand.line.length > 1 ? stand.line : [stand.head, stand.head];
   const path = () => { ctx.beginPath(); line.forEach((p, i) => { const [x, y] = P(p); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); }); };
   if (stand.uncertainty_m) {
@@ -57,6 +55,8 @@ export function drawMap(canvas, { lines, stand, you }) {
   ctx.lineWidth = 8;
   path(); ctx.stroke();
   const [hx, hy] = P(stand.head);
+  ctx.fillStyle = col('--surface'); // the head: an ink dot in a ring of ground, so it sits clear of the kerb line
+  ctx.beginPath(); ctx.arc(hx, hy, 11, 0, 2 * Math.PI); ctx.fill();
   ctx.fillStyle = col('--ink');
   ctx.beginPath(); ctx.arc(hx, hy, 8, 0, 2 * Math.PI); ctx.fill();
   if (you) {
@@ -67,11 +67,11 @@ export function drawMap(canvas, { lines, stand, you }) {
     }
   }
   ctx.fillStyle = col('--ink-dim');
-  ctx.font = '18px system-ui, sans-serif';
+  ctx.font = '26px system-ui, sans-serif'; // about 14 CSS px on a 360 px phone
   ctx.textAlign = 'right';
-  ctx.fillText('© OpenStreetMap contributors', W - 12, H - 12);
+  ctx.fillText('© OpenStreetMap contributors', W - 16, H - 16);
   ctx.textAlign = 'left';
-  ctx.fillText('N ↑  ·  head of stand ●', 12, 28);
+  ctx.fillText('N ↑  ·  head of stand ●', 16, 36);
 }
 
 /** Draw the map on the detail screen's canvas, loading streets.json once. */

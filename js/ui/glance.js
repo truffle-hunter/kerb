@@ -45,17 +45,26 @@ function recBlock(S, A, from) {
     ? `You saw ${S.lastReport.cabsAhead} cabs ahead · ${minutesAgo(S.lastReport.t, S.now)} min ago` : null;
   return h('section', { class: 'rec' },
     h('p', { class: 'lead' }, 'Head to'),
-    h('button', { class: `name${S.changed ? ' changed' : ''}`, 'data-test': 'rec-name', 'data-stand': s.id, onclick: () => A.detail(s.id) }, s.name),
-    h('div', { class: 'stripe', 'data-level': top.demand.level, role: 'img', 'aria-label': `Demand likely ${top.demand.level}` }, h('i')),
+    h('button', { class: 'name', 'data-test': 'rec-name', 'data-stand': s.id, onclick: () => A.detail(s.id) }, s.name),
+    kerbstones(top.demand.level),
     h('div', { class: 'demandrow' }, // Go sits high up so the pinned timer bar can never cover it (review fix)
-      h('p', { class: 'big demand', 'data-test': 'rec-demand' }, `Demand likely: ${top.demand.level}`),
+      h('p', { class: 'big demand', 'data-test': 'rec-demand' }, // "likely: high" stays together: the level word never stands alone
+        'Demand ', h('span', { class: 'nowrap' }, 'likely: ', h('b', {}, top.demand.level))),
+      h('p', { class: 'big', 'data-test': 'rec-km' }, `${fmtKm(top.km, top.approx)} ${dir}`.trim()),
       h('a', { class: 'go', 'data-test': 'btn-go', href: navUrl(S.settings.nav, s.head, s.name), target: '_blank', rel: 'noopener' }, 'Go')),
-    h('p', { class: 'big', 'data-test': 'rec-km' }, `${fmtKm(top.km, top.approx)} ${dir}`.trim()),
-    h('p', { class: 'big', 'data-test': 'rec-legal' }, legalLine(top.status)),
-    h('p', { class: 'big', 'data-test': 'rec-reason' }, top.demand.reason),
+    h('p', { class: 'big dim', 'data-test': 'rec-legal' }, legalLine(top.status)),
+    h('p', { class: 'big dim', 'data-test': 'rec-reason' }, top.demand.reason),
     caution(S, s.id),
     hist(S, s.id, 'big hist', 'rec-history'),
     rep ? h('p', { class: 'report', 'data-test': 'rec-report' }, rep) : null);
+}
+
+/** Demand as three kerbstones (ADR 0009): filled ones are solid, so the level reads by count and shape, never colour
+ * alone; the word stays beside it (ADR 0002). */
+const STONES = { low: 1, medium: 2, high: 3 };
+function kerbstones(level) {
+  return h('div', { class: 'stripe', 'data-test': 'glance-stripe', 'data-level': level, role: 'img', 'aria-label': `Demand likely ${level}` },
+    [0, 1, 2].map((i) => h('i', { class: i < STONES[level] ? 'on' : null })));
 }
 
 /** The driver's own past waits at a stand (ADR 0008), or nothing under 3 confirmed waits. */
@@ -93,8 +102,8 @@ export function loggerBar(S, A) {
     return h('footer', { class: 'bar', 'data-test': 'join-bar' },
       h('p', { class: 'q' }, `Joined ${standName(S, L.stand)}?`),
       h('button', { class: 'btn primary', 'data-test': 'btn-join', onclick: () => A.join() }, 'Yes'),
-      L.candidates.length > 1 ? h('button', { class: 'btn', 'data-test': 'btn-switch', onclick: A.switchStand }, 'Other stand') : null,
-      h('button', { class: 'btn', 'data-test': 'btn-dismiss', onclick: A.dismiss }, 'Not now'));
+      h('button', { class: 'btn tall', 'data-test': 'btn-dismiss', onclick: A.dismiss }, 'Not now'),
+      L.candidates.length > 1 ? quiet(h('button', { class: 'btn quiet', 'data-test': 'btn-switch', onclick: A.switchStand }, 'Other stand')) : null);
   }
   if (L.mode === 'waiting' && S.picker) return pickerBar(S, A);
   if (L.mode === 'waiting') {
@@ -104,37 +113,41 @@ export function loggerBar(S, A) {
     const lead = src === 'start' ? (L.stand == null ? `Timing: ${name}` : `Timing ${name}`) : src === 'auto' ? `Logging wait at ${name}` : `Waiting at ${name}`;
     const canSwitch = (L.stand && L.candidates.length > 1) || (S.data.chains || []).some((c) => [c.main, ...c.overflow].includes(L.stand));
     return h('footer', { class: 'bar', 'data-test': 'wait-bar' },
-      h('p', { class: 'q', 'data-test': 'wait-timer' }, `${lead}, ${mins} min`),
+      h('p', { class: 'q', 'data-test': 'wait-timer' }, `${lead}, `, h('b', { class: 'nowrap' }, `${mins} min`)),
       h('span', { class: 'stepper', 'data-test': 'cabs-stepper' },
         h('button', { class: 'btn', 'aria-label': 'One fewer cab ahead', onclick: () => A.report(-1) }, '−'),
         h('output', { 'aria-label': 'Cabs ahead of you' }, S.cabsAhead == null ? '?' : String(S.cabsAhead)),
         h('button', { class: 'btn', 'aria-label': 'One more cab ahead', onclick: () => A.report(1) }, '+'),
         h('span', { class: 'note' }, 'cabs ahead')),
       h('button', { class: 'btn primary', 'data-test': 'btn-fare', onclick: A.fareIn }, 'Fare'),
-      h('button', { class: 'btn', 'data-test': 'btn-left', onclick: A.left }, 'Left empty'),
-      L.stand == null ? h('button', { class: 'btn', 'data-test': 'btn-choose', onclick: A.openPicker }, 'Choose rank') : null,
-      canSwitch ? h('button', { class: 'btn', 'data-test': 'btn-switch', onclick: A.switchStand }, 'Other stand') : null,
-      h('button', { class: 'btn', 'data-test': 'btn-discard', onclick: A.discard }, 'Not a rank wait'));
+      h('button', { class: 'btn tall', 'data-test': 'btn-left', onclick: A.left }, 'Left empty'),
+      quiet( // "Choose rank" takes the "Other stand" slot: a wait with no rank has nothing to switch from
+        L.stand == null ? h('button', { class: 'btn quiet', 'data-test': 'btn-choose', onclick: A.openPicker }, 'Choose rank')
+          : canSwitch ? h('button', { class: 'btn quiet', 'data-test': 'btn-switch', onclick: A.switchStand }, 'Other stand') : null,
+        h('button', { class: 'btn quiet', 'data-test': 'btn-discard', onclick: A.discard }, 'Not a rank wait')));
   }
   if (L.mode === 'outcome') {
     const mins = L.departAt && L.joinedAt ? Math.round((L.departAt - L.joinedAt) / 60000) : null;
     return h('footer', { class: 'bar', 'data-test': 'outcome-bar' },
       h('p', { class: 'q' }, `Left ${standName(S, L.stand)}${L.departAt ? ` at ${hhmm(L.departAt)}` : ''}${mins != null ? ` after ${mins} min` : ''}. Fare?`),
       h('button', { class: 'btn primary', 'data-test': 'btn-fare', onclick: A.fare }, 'Fare'),
-      h('button', { class: 'btn', 'data-test': 'btn-left', onclick: A.left }, 'Left empty'),
-      h('button', { class: 'btn', 'data-test': 'btn-still', onclick: A.still }, 'Still waiting'),
-      h('button', { class: 'btn', 'data-test': 'btn-discard', onclick: A.discard }, 'Not a rank wait'));
+      h('button', { class: 'btn tall', 'data-test': 'btn-left', onclick: A.left }, 'Left empty'),
+      quiet(h('button', { class: 'btn quiet', 'data-test': 'btn-still', onclick: A.still }, 'Still waiting'),
+        h('button', { class: 'btn quiet', 'data-test': 'btn-discard', onclick: A.discard }, 'Not a rank wait')));
   }
   return idleBar(S, A);
 }
 
 function pickerBar(S, A) {
-  return h('footer', { class: 'bar', 'data-test': 'picker' },
+  return h('footer', { class: 'bar picking', 'data-test': 'picker' },
     h('p', { class: 'q' }, 'Which rank are you at?'),
     h('div', { class: 'picker' }, S.nearby.length ? S.nearby.map((s) => h('button', { class: 'btn', 'data-test': 'pick', onclick: () => A.chooseRank(s.id) }, s.name))
       : h('p', { class: 'note' }, 'No rank on Kerb\'s list within 1 km.')),
-    h('button', { class: 'btn', onclick: A.closePicker }, 'Cancel'));
+    quiet(h('button', { class: 'btn quiet', onclick: A.closePicker }, 'Cancel')));
 }
+
+/** The rarer bar actions, as quiet text buttons on one row beneath the main ones (ADR 0009). */
+const quiet = (...buttons) => h('div', { class: 'quietrow' }, buttons);
 
 const seg = (label, on, onclick, test) => h('button', { class: `seg${on ? ' on' : ''}`, role: 'radio', 'aria-checked': on ? 'true' : 'false', 'data-test': test, onclick }, label);
 
@@ -151,7 +164,7 @@ function idleBar(S, A) {
     : a && a.will ? `You're at ${standName(S, a.stand)} · starts after 2 min`
       : seen ? `${seen} · tap Start now` : 'Starts by itself after 2 min at a rank';
   return h('footer', { class: `bar idle${auto ? '' : ' manual'}` },
-    h('div', { class: 'modeswitch', role: 'radiogroup', 'aria-label': 'Rank timer', 'data-test': 'mode-switch' },
+    h('div', { class: `modeswitch${auto ? '' : ' is-manual'}`, role: 'radiogroup', 'aria-label': 'Rank timer', 'data-test': 'mode-switch' },
       seg('Auto', auto, () => A.setMode(true), 'mode-auto'),
       seg('Manual', !auto, () => A.setMode(false), 'mode-manual')),
     h('p', { class: 'q timerstatus', 'data-test': 'timer-status' }, status),

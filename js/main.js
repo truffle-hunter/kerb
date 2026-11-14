@@ -23,6 +23,7 @@ import { phoneCheck, gatherProbe } from './ui/phonecheck.js';
 import { ranks } from './ui/ranks.js';
 import { checkRows, reportText } from './engine/phonecheck.js';
 import { drawDetailMap } from './ui/map.js';
+import { motionFlags, renderState, continueFlags, motionStyle } from './ui/motion.js';
 import { fetchWeather } from './platform/weather.js';
 import { liveItems } from './platform/relay.js';
 
@@ -42,7 +43,7 @@ const S = {
   settings: { nav: 'google', permit: false, theme: 'auto', shift: false, relay: '', autoLog: true },
   view: 'glance', detailId: null, weather: null, live: null, storageOk: true, firstRun: false, lastTop: null, changed: false,
   online: navigator.onLine, picker: false, openSource: null, timetable: { current: true, to: null }, eventsStale: false, updateReady: false, nearby: [], cabsAhead: null, lastReport: null, ocb: OCB, device: null,
-  fixLog: [], offlineBootAt: null, lastBackup: null, persisted: null, check: null, restoreMsg: null, rankQuery: '', detailFrom: 'glance', logFilter: null, scroll: {}, renderedView: null, // Phone check, backup (ADR 0008)
+  fixLog: [], offlineBootAt: null, lastBackup: null, persisted: null, check: null, restoreMsg: null, rankQuery: '', detailFrom: 'glance', logFilter: null, scroll: {}, renderedView: null, lastRender: null, motion: {}, // Phone check, backup (ADR 0008)
 };
 let worker = null, workerReady = false, workerFailed = false, loc = null, weatherAt = -Infinity, relayAt = -Infinity;
 const hooks = { afterRender: [] };
@@ -59,7 +60,7 @@ function applyTheme() {
   const t = S.settings.theme === 'auto' ? (sunElevation(S.now, 53.35, -6.26) < 3 ? 'dark' : 'light') : S.settings.theme;
   if (document.documentElement.dataset.theme !== t) {
     document.documentElement.dataset.theme = t;
-    document.querySelector('meta[name=theme-color]').setAttribute('content', t === 'dark' ? '#101A26' : '#F4F6F8');
+    document.querySelector('meta[name=theme-color]').setAttribute('content', t === 'dark' ? '#12100E' : '#F5F3F0');
   }
 }
 
@@ -342,6 +343,13 @@ function render() {
     : S.view === 'check' ? phoneCheck(S, A, parts)
     : S.view === 'ranks' ? ranks(S, A, parts)
     : S.view === 'settings' ? settings(S, A, parts) : glance(S, A, parts);
+  // ADR 0009: animate only what changed since the last render; a render mid-animation continues it from where it was
+  const seen = renderState(S, viewKey()), t = performance.now();
+  S.motion = continueFlags(S.motion, motionFlags(S.lastRender, seen), t);
+  const m = motionStyle(S.motion, t);
+  root.className = m.className;
+  root.style.cssText = m.style;
+  S.lastRender = seen;
   root.replaceChildren(...view, ...(S.firstRun ? [firstrun(A)] : []));
   S.renderedView = viewKey();
   const after = root.querySelector(':scope > main');
