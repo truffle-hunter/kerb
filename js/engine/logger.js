@@ -3,7 +3,7 @@
 // presence in a stand's queue zone is the stationarity test, never speed computed from 1 Hz fixes.
 //   idle -> prompt (30 s in a zone) -> waiting (tap, or automatic after 120 s for well-placed usable stands)
 //   waiting -> outcome (left the zone) -> idle (Fare / Left empty / unknown after 30 min)
-import { distM, queueZone, headFirst, queueBearing, bearingDeg } from './geo.js';
+import { distM, queueZone, headFirst, queueBearing, bearingDeg, nearestOnLine } from './geo.js';
 
 export function initial() {
   return { mode: 'idle', stand: null, candidates: [], joinedAt: null, joinT: null, departAt: null, promptAt: null,
@@ -27,6 +27,38 @@ function zonesAt(p, ctx) {
     if (z.in) out.push({ id: s.id, z });
   }
   return out.sort((a, b) => a.z.lateral - b.z.lateral);
+}
+
+/** Which rank is the car at? (ADR 0006) Uses the latest good fix (accuracy <= 30 m, at most start_fix_max_age_s old):
+ *  a stand whose queue zone holds it (on the kerb line first, then nearest; a chain's main stand wins ties within 5 m),
+ *  else the nearest usable stand within start_nearest_m, else none. Never a list. */
+export function detectStand(fix, now, ctx) {
+  const L = ctx.params.logger;
+  if (!fix) return { stand: null, detect: 'none', detect_m: null, candidates: [], near: [] };
+  const p = [fix.lon, fix.lat];
+  const usable = ctx.stands.filter((s) => ctx.usableIds.has(s.id) && (s.line || s.head));
+  const dist = (s) => (s.line && s.line.length >= 2 ? nearestOnLine(p, s.line).distM : distM(p, s.head || s.line[0]));
+  const ranked = usable.map((s) => ({ id: s.id, d: dist(s) })).sort((a, b) => a.d - b.d);
+  const near = ranked.filter((x) => x.d <= L.near_radius_m).slice(0, 5).map((x) => x.id);
+  const fresh = (now - fix.t) / 1000 <= L.start_fix_max_age_s && (fix.accuracy == null || fix.accuracy <= 30);
+  if (!fresh) return { stand: null, detect: 'none', detect_m: null, candidates: [], near };
+  const within = ranked.filter((x) => x.d <= L.start_nearest_m).map((x) => x.id);
+  const zone = usable.filter((s) => s.line).map((s) => ({ id: s.id, z: queueZone(p, s, L) })).filter((x) => x.z.in)
+    .map((x) => ({ id: x.id, onLine: x.z.s >= 0 && x.z.s <= x.z.L, lat: x.z.lateral }))
+    .sort((a, b) => (b.onLine - a.onLine) || a.lat - b.lat);
+  if (zone.length) {
+    let best = zone[0];
+    for (const c of ctx.chains || []) {
+      const group = [c.main, ...c.overflow];
+      const main = zone.find((z) => z.id === c.main);
+      if (group.includes(best.id) && main && main !== best && main.onLine === best.onLine && main.lat - best.lat < 5) best = main;
+    }
+    return { stand: best.id, detect: 'zone', detect_m: Math.round(best.lat), candidates: [best.id, ...within.filter((id) => id !== best.id)], near };
+  }
+  if (ranked.length && ranked[0].d <= L.start_nearest_m) {
+    return { stand: ranked[0].id, detect: 'nearest', detect_m: Math.round(ranked[0].d), candidates: within, near };
+  }
+  return { stand: null, detect: 'none', detect_m: null, candidates: [], near };
 }
 
 function partners(state, ctx) {
@@ -61,7 +93,7 @@ const toIdle = (state, extra = {}) => ({ ...state, mode: 'idle', stand: null, ca
   burst: null, asserted: false, anchorPt: null, seenAt: null, suppressedIds: [], ...extra });
 
 function suppressAt(p, stand, ctx) {
-  const ids = new Set([stand]);
+  const ids = new Set(stand ? [stand] : []);
   if (p) for (const c of zonesAt(p, ctx)) ids.add(c.id);
   return [...ids];
 }
@@ -115,7 +147,7 @@ function onFixIdle(state, s, fix, p, gap, ctx) {
     w.candidates = s.dwell.cands;
     return { state: w, events: [ev] };
   }
-  if (s.mode === 'idle' && dur >= L.prompt_s) {
+  if (s.mode === 'idle' && dur >= L.prompt_s && ctx.auto && !auto) { // ADR 0006: Manual has no prompt; Auto asks only where it can't start itself
     return { state: { ...s, mode: 'prompt', stand: s.dwell.stand, candidates: s.dwell.cands, promptAt: fix.t }, events: [] };
   }
   if (s.mode === 'prompt' && !auto && sec(fix.t, s.promptAt) > L.prompt_expire_s) {
@@ -126,17 +158,18 @@ function onFixIdle(state, s, fix, p, gap, ctx) {
 
 function onFixWaiting(state, s, fix, p, ctx) {
   const L = ctx.params.logger;
-  const stand = byId(ctx, state.stand);
+  const stand = state.stand ? byId(ctx, state.stand) : null;
   const good = fix.accuracy == null || fix.accuracy <= 30;
   const events = [];
-  if (!stand || !stand.line) return { state: s, events };
-  const z = queueZone(p, stand, L);
-  const tail = z.L + L.zone_tail_factor * Math.max(z.L, 20);
-  const lateralMax = L.zone_lateral_m + Math.min(stand.uncertainty_m || 0, 15);
-  // A tapped join where the car is outside the mapped zone (tier C, or "Other stand") is anchored on where the
-  // driver was when they tapped: the zone would otherwise end it at once (ADR 0005 review).
-  if (state.anchorPt === undefined && good) s.anchorPt = state.asserted && !z.in ? p : false; // decided once, on the first good fix
+  const hasLine = !!(stand && stand.line && stand.line.length >= 2);
+  const z = hasLine ? queueZone(p, stand, L) : null;
+  const tail = hasLine ? z.L + L.zone_tail_factor * Math.max(z.L, 20) : 0;
+  const lateralMax = L.zone_lateral_m + Math.min((stand && stand.uncertainty_m) || 0, 15);
+  // A tapped wait where the car is outside the mapped zone (tier C, "Other stand"), or with no kerb line at all
+  // (rank not on Kerb's list, single-point ranks), is anchored on where the driver was when it started (ADR 0005/0006).
+  if (state.anchorPt === undefined && good) s.anchorPt = state.asserted && (!hasLine || !z.in) ? p : false; // decided once
   const anchored = !!s.anchorPt;
+  if (!anchored && !hasLine) return { state: s, events };
   const inside = anchored ? distM(p, s.anchorPt) <= lateralMax + 15 : z.in;
   const beyond = anchored ? distM(p, s.anchorPt) - (lateralMax + 15)
     : Math.max(z.lateral - lateralMax, -L.zone_head_margin_m - z.s, z.s - tail, 0);
@@ -157,7 +190,7 @@ function onFixWaiting(state, s, fix, p, ctx) {
   if (outLong || far || fast) {
     let t = [s.outSince, s.fastSince, fix.t].filter(Boolean).reduce((a, b) => (a < b ? a : b));
     const exit = s.outZ || z;
-    let leftVia = anchored ? 'unknown' : exit.s < -L.zone_head_margin_m ? 'head' : exit.s > tail ? 'tail' : 'side';
+    let leftVia = anchored || !exit ? 'unknown' : exit.s < -L.zone_head_margin_m ? 'head' : exit.s > tail ? 'tail' : 'side';
     const uncertain = !!(state.lastSeen && sec(t, state.lastSeen) > L.gap_s);
     if (uncertain) { t = state.lastSeen; leftVia = 'unknown'; }
     events.push({ type: 'depart', t: iso(t), stand: state.stand, left_via: leftVia,
@@ -170,6 +203,7 @@ function onFixWaiting(state, s, fix, p, ctx) {
   // drop in the 30 s median distance to the head is logged as approximate only (measured: about 6 in 10 one-cab moves
   // found, about one fake per 10 minutes on correlated urban noise).
   if (fix.speed != null) s.speedSeen = true;
+  if (!hasLine) return { state: s, events }; // moving up is measured along a kerb line only
   const b = state.burst;
   if (fix.speed != null && fix.speed >= L.creep_speed_mps && inside) {
     const dt = state.lastFix ? Math.min(2, Math.max(0, sec(fix.t, state.lastFix.t))) : 1;
@@ -255,18 +289,45 @@ export function step(state, input, ctx) {
       w.anchorPt = undefined; // set from the next fix: the tap position, if the car is outside the mapped zone
       return { state: w, events };
     }
+    case 'tap_start': { // ADR 0006: "Start rank timer" / "Start now" — the rank is detected, never picked from a list
+      if (state.mode === 'waiting' || state.mode === 'outcome') return { state, events: [] };
+      const det = detectStand(state.lastFix, input.t, ctx);
+      const observed = state.dwell && state.dwell.stand === det.stand && !state.dwell.startUncertain;
+      const t = ctx.auto && det.stand && observed ? state.dwell.since : input.t; // Auto "Start now" keeps the first minute
+      const shown = det.stand ? ctx.shown(det.stand) : null;
+      const ev = { type: 'join', t: iso(t), stand: det.stand, source: 'start', detect: det.detect,
+        ...(det.detect_m != null ? { detect_m: det.detect_m } : {}), ...(det.detect === 'none' ? { near: det.near } : {}),
+        shown, versions: ctx.versions, gps_accuracy_m: state.lastFix ? state.lastFix.accuracy ?? null : null,
+        followed_top_pick: !!(det.stand && shown && shown.rank_order && shown.rank_order[0] === det.stand) };
+      const w = waitingState(state, det.stand, t, input.t);
+      w.candidates = det.candidates;
+      w.asserted = true;
+      // anchor on the tap position only when that fix is fresh and accurate; otherwise the next good fix decides (review fix)
+      const f = state.lastFix;
+      const usableFix = f && (input.t - f.t) / 1000 <= ctx.params.logger.start_fix_max_age_s && (f.accuracy == null || f.accuracy <= 30);
+      w.anchorPt = det.detect === 'zone' || !usableFix ? undefined : [f.lon, f.lat];
+      return { state: w, events: [ev] };
+    }
+    case 'tap_still': { // "Still waiting": the departure was wrong; the timer carries on (ADR 0006)
+      if (state.mode !== 'outcome') return { state, events: [] };
+      const here = state.lastFix ? [state.lastFix.lon, state.lastFix.lat] : null;
+      // re-anchor where the car is now, so a queue longer than the mapped zone does not raise the question again (review fix)
+      return { state: { ...state, mode: 'waiting', departAt: null, outSince: null, outZ: null, fastSince: null, lastSeen: input.t, seenAt: input.t,
+        anchorPt: here || state.anchorPt },
+      events: [{ type: 'resume', t: iso(input.t), stand: state.stand }] };
+    }
     case 'tap_discard': {
       if (state.mode !== 'waiting' && state.mode !== 'outcome') return { state, events: [] };
       const p = state.lastFix ? [state.lastFix.lon, state.lastFix.lat] : null;
       return { state: toIdle(state, { suppressedIds: suppressAt(p, state.stand, ctx) }),
         events: [{ type: 'void', t: iso(input.t), wait: state.joinT, stand: state.stand, source: 'bar' }] };
     }
-    case 'tap_switch': {
-      const next = partners(state, ctx)[0];
+    case 'tap_switch': { // "Other stand" cycles the candidates; "Choose rank" passes the stand explicitly (ADR 0006)
+      const next = input.stand || partners(state, ctx)[0];
       if (!next) return { state, events: [] };
-      if (state.mode === 'prompt') return { state: { ...state, stand: next, candidates: [...state.candidates.filter((c) => c !== next), state.stand] }, events: [] };
+      if (state.mode === 'prompt') return { state: { ...state, stand: next, candidates: [...state.candidates.filter((c) => c !== next), state.stand].filter(Boolean) }, events: [] };
       if (state.mode === 'waiting') {
-        return { state: { ...state, stand: next, candidates: [...state.candidates.filter((c) => c !== next), state.stand], asserted: true, anchorPt: undefined },
+        return { state: { ...state, stand: next, candidates: [...state.candidates.filter((c) => c !== next), state.stand].filter(Boolean), asserted: true, anchorPt: undefined },
           events: [{ type: 'switch_stand', t: iso(input.t), from: state.stand, stand: next }] };
       }
       return { state, events: [] };
@@ -305,6 +366,7 @@ export function deriveWaits(events) {
         followed_top_pick: e.followed_top_pick, join_source: e.source, cabs_ahead: null, people: null,
         shown: e.shown, versions: e.versions, gps_accuracy_m: e.gps_accuracy_m, end_uncertain: false,
         confirmed: e.source !== 'auto', detected_at: e.detected_at || null, creeps: 0, left_via: null, start_uncertain: !!e.start_uncertain,
+        detect: e.detect || (e.source === 'auto' ? 'auto' : null), near: e.near || null,
         cabs_ahead_est: e.cabs_ahead_est ?? null, _fareIn: null, _depart: null };
     } else if (!w) {
       continue;
@@ -314,6 +376,8 @@ export function deriveWaits(events) {
       w.stand = e.stand; w.confirmed = true;
     } else if (e.type === 'creep') {
       w.creeps++;
+    } else if (e.type === 'resume') { // "Still waiting": the departure did not happen
+      w._depart = null; w.left_via = null; w.end_uncertain = false; w.confirmed = true;
     } else if (e.type === 'fare_in') {
       w._fareIn = e.t;
     } else if (e.type === 'depart') {

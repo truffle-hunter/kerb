@@ -32,6 +32,8 @@ export function median(xs) {
 const BANDS = ['00–04', '04–08', '08–12', '12–16', '16–20', '20–24'];
 const serviceDate = (iso, startHour) => dublinParts(new Date(Date.parse(iso) - startHour * 3600000)).date;
 const answeredOf = (ws) => ws.filter((w) => w.outcome === 'fare' || w.outcome === 'left_empty');
+export const NOT_LISTED = "Rank not on Kerb's list";
+const nameOf = (ctx, id) => (id == null ? NOT_LISTED : ctx.byId[id] ? ctx.byId[id].name : id);
 
 /** The driver's own history (spec §8b): plain medians of time at the rank (most automatic waits are never answered,
  *  so a Kaplan-Meier "time to a fare" is reported only over answered waits), the last shift, each stand, six bands,
@@ -49,7 +51,7 @@ export function computeStats(waits, now, ctx) {
   const byStand = [...groups.entries()].map(([stand, g]) => {
     const a = answeredOf(g);
     const km = kmMedian(a.map((w) => ({ wait_min: w.wait_min, censored: w.outcome !== 'fare' || w.end_uncertain || w.start_uncertain })));
-    return { stand, name: ctx.byId[stand] ? ctx.byId[stand].name : stand, n: g.length, median: median(g.map((w) => w.wait_min)),
+    return { stand, name: nameOf(ctx, stand), n: g.length, median: median(g.map((w) => w.wait_min)),
       fares: a.filter((w) => w.outcome === 'fare').length, answered: a.length, fareMedian: km.n ? km : null,
       uncertain: g.filter((w) => w.end_uncertain || w.start_uncertain).length };
   }).sort((x, y) => y.n - x.n || x.name.localeCompare(y.name));
@@ -64,7 +66,7 @@ export function computeStats(waits, now, ctx) {
     const date = ws.map((w) => serviceDate(w.joined_at, startHour)).sort().pop();
     const g = ws.filter((w) => serviceDate(w.joined_at, startHour) === date);
     const sorted = [...g].sort((a, b) => a.wait_min - b.wait_min);
-    const pick = (w) => ({ min: w.wait_min, stand: w.stand, name: ctx.byId[w.stand] ? ctx.byId[w.stand].name : w.stand, uncertain: !!(w.end_uncertain || w.start_uncertain) });
+    const pick = (w) => ({ min: w.wait_min, stand: w.stand, name: nameOf(ctx, w.stand), uncertain: !!(w.end_uncertain || w.start_uncertain) });
     lastShift = { date, waits: g.length, minutes: g.reduce((t, w) => t + w.wait_min, 0), fares: g.filter((w) => w.outcome === 'fare').length,
       answered: answeredOf(g).length, longest: pick(sorted[sorted.length - 1]), shortest: pick(sorted[0]) };
   }

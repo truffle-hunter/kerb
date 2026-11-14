@@ -9,7 +9,7 @@ import { status, isUsable } from './engine/legal.js';
 import { distM } from './engine/geo.js';
 import { recommend, score } from './engine/demand.js';
 import { upcoming, nextImportant, triggersAround, timetableStatus } from './engine/triggers.js';
-import { initial as loggerInitial, step as loggerStep, deriveWaits } from './engine/logger.js';
+import { initial as loggerInitial, step as loggerStep, deriveWaits, detectStand } from './engine/logger.js';
 import { toJSON, toCSV } from './engine/export.js';
 import { sunElevation } from './ui/dom.js';
 import { glance } from './ui/glance.js';
@@ -92,6 +92,7 @@ function feedLogger(input) {
   const before = S.logger;
   const r = loggerStep(S.logger, input, loggerCtx());
   S.logger = r.state;
+  if (before.mode !== r.state.mode) S.barChangedAt = performance.now();
   for (const ev of r.events) {
     S.events.push(ev);
     store.append(ev).catch(() => { S.storageOk = false; render(); }); // e.g. quota or eviction: say so, never lose silently
@@ -110,16 +111,19 @@ function restoreLogger(events) {
     if (e.type === 'join') open = { stand: e.stand, joinedAt: new Date(e.t), joinT: e.t, departAt: null, lastSeen: new Date(e.detected_at || e.t), source: e.source };
     else if (e.type === 'switch_stand' && open) open.stand = e.stand;
     else if (e.type === 'depart' && open) open.departAt = new Date(e.t);
+    else if (e.type === 'resume' && open) open.departAt = null; // "Still waiting" undid the departure
     else if (e.type === 'outcome' || e.type === 'cancel' || (e.type === 'void' && open && e.wait === open.joinT)) open = null;
   }
   if (open) {
     const { source, ...rest } = open;
-    S.logger = { ...loggerInitial(), mode: open.departAt ? 'outcome' : 'waiting', ...rest, seenAt: rest.lastSeen };
+    // tapped waits decide their anchor again from the next good fix (waits without a kerb line depend on it)
+    S.logger = { ...loggerInitial(), mode: open.departAt ? 'outcome' : 'waiting', ...rest, seenAt: rest.lastSeen,
+      asserted: source !== 'auto', anchorPt: undefined };
     S.openSource = source;
   } else {
     // "Not a rank wait" tapped shortly before Kerb was closed: keep that stand quiet until the car has moved away
     const last = events[events.length - 1];
-    if (last && last.type === 'void' && last.source === 'bar' && clockNow() - Date.parse(last.t) < 30 * 60000) {
+    if (last && last.type === 'void' && last.source === 'bar' && last.stand && clockNow() - Date.parse(last.t) < 30 * 60000) {
       S.logger = { ...loggerInitial(), suppressedIds: [last.stand] };
     }
   }
@@ -156,7 +160,13 @@ function onFix(f) {
   if (loc) loc.setHigh(S.logger.mode === 'waiting' || S.data.stands.some((s) => s.head && distM(p, s.head) <= 500));
   const moved = !S.kmRequested || distM(S.kmRequested, p) >= MOVE_M;
   if (moved) requestKm();
-  if (moved || !wasOk) { recompute(); render(); } else if (loggerChanged) render();
+  // the idle bar names the rank Kerb sees: re-render when that changes, not only every 25 m (review fix)
+  let seenChanged = false;
+  if (S.view === 'glance' && S.logger.mode === 'idle') {
+    const d = detectStand(f, clockNow(), loggerCtx());
+    seenChanged = !S.detected || d.stand !== S.detected.stand || d.detect !== S.detected.detect;
+  }
+  if (moved || !wasOk) { recompute(); render(); } else if (loggerChanged || seenChanged) render();
 }
 
 function onLocError() {
@@ -210,9 +220,16 @@ const A = {
   openLog() { S.view = 'log'; render(); },
   openSettings() { S.view = 'settings'; render(); },
   join(id) { feedLogger({ type: 'tap_join', stand: id, t: at() }); S.picker = false; render(); },
+  start() { feedLogger({ type: 'tap_start', t: at() }); S.picker = false; render(); }, // ADR 0006: rank detected, no list
+  still() { feedLogger({ type: 'tap_still', t: at() }); render(); },
+  setMode(auto) { A.setSetting('autoLog', auto); },
+  chooseRank(id) { feedLogger({ type: 'tap_switch', stand: id, t: at() }); S.picker = false; render(); },
   switchStand() { feedLogger({ type: 'tap_switch', t: at() }); render(); },
   dismiss() { feedLogger({ type: 'dismiss', t: at() }); render(); },
-  discard() { feedLogger({ type: 'tap_discard', t: at() }); render(); },
+  discard() { // the one bar action that loses data: ignore it just after the bar changed (a double tap on Start lands here)
+    if (performance.now() - (S.barChangedAt || 0) < 600) return;
+    feedLogger({ type: 'tap_discard', t: at() }); render();
+  },
   openStats() { S.view = 'stats'; render(); },
   review(type, wait, field, value) { // Log review: confirm / edit / void a finished wait (append-only, ADR 0005)
     const ev = { type, t: at().toISOString(), wait, source: 'review', ...(field ? { field, value } : {}) };
@@ -259,6 +276,7 @@ function render() {
   const root = document.getElementById('app');
   const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.test : null;
   const parts = { ...dublinParts(S.now), time: hhmm(S.now) };
+  if (S.view === 'glance' && S.data) S.detected = detectStand(S.fix, clockNow(), loggerCtx()); // which rank the idle bar names
   const view = S.view === 'detail' ? detail(S, A, S.detailId, parts) : S.view === 'log' ? log(S, A, parts)
     : S.view === 'stats' ? statsView(S, A, parts)
     : S.view === 'settings' ? settings(S, A, parts) : glance(S, A, parts);

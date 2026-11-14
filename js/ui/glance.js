@@ -2,6 +2,7 @@
 import { h, iconButton, fmtKm, legalLine, minutesAgo } from './dom.js';
 import { bearingDeg, cardinal } from '../engine/geo.js';
 import { navUrl } from '../platform/nav.js';
+import { hhmm } from '../engine/time.js';
 
 const WD = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -13,14 +14,15 @@ export function header(S, A, parts) {
   return h('header', { class: 'top' },
     h('span', { class: 'clock', 'data-test': 'clock' }, `${parts.time} ${WD[parts.weekday]}`),
     S.online ? null : h('span', { class: 'offline', 'data-test': 'offline' }, 'Offline'),
-    h('span', { class: stale ? 'offline' : 'datastate', 'data-test': 'data-state' },
-      stale ? 'Data out of date' : `Data ${shortDate(S.data.meta.built_at)}`),
-    S.updateReady ? h('button', { class: 'btn primary small', 'data-test': 'update-ready', onclick: () => location.reload() }, 'Update ready: reload') : null,
     h('span', { class: 'spacer' }),
     iconButton('stats', 'Your stats', A.openStats, 'nav-stats'),
     iconButton('log', 'Wait log', A.openLog, 'nav-log'),
     iconButton('settings', 'Settings', A.openSettings, 'nav-settings'),
-    h('span', { class: 'marker', 'data-test': 'marker' }, 'Guess · no driver data yet'));
+    h('div', { class: 'row2' }, // second line: how sure, and how fresh the data is (keeps the icon row on one line on small phones)
+      h('span', { class: 'marker', 'data-test': 'marker' }, 'Guess · no driver data yet'),
+      h('span', { class: stale ? 'offline' : 'datastate', 'data-test': 'data-state' },
+        stale ? 'Data out of date' : `Data ${shortDate(S.data.meta.built_at)}`),
+      S.updateReady ? h('button', { class: 'btn primary small', 'data-test': 'update-ready', onclick: () => location.reload() }, 'Update ready: reload') : null));
 }
 
 function recBlock(S, A, from) {
@@ -39,14 +41,14 @@ function recBlock(S, A, from) {
     h('p', { class: 'lead' }, 'Head to'),
     h('button', { class: `name${S.changed ? ' changed' : ''}`, 'data-test': 'rec-name', 'data-stand': s.id, onclick: () => A.detail(s.id) }, s.name),
     h('div', { class: 'stripe', 'data-level': top.demand.level, role: 'img', 'aria-label': `Demand likely ${top.demand.level}` }, h('i')),
-    h('p', { class: 'big demand', 'data-test': 'rec-demand' }, `Demand likely: ${top.demand.level}`),
+    h('div', { class: 'demandrow' }, // Go sits high up so the pinned timer bar can never cover it (review fix)
+      h('p', { class: 'big demand', 'data-test': 'rec-demand' }, `Demand likely: ${top.demand.level}`),
+      h('a', { class: 'go', 'data-test': 'btn-go', href: navUrl(S.settings.nav, s.head, s.name), target: '_blank', rel: 'noopener' }, 'Go')),
     h('p', { class: 'big', 'data-test': 'rec-km' }, `${fmtKm(top.km, top.approx)} ${dir}`.trim()),
     h('p', { class: 'big', 'data-test': 'rec-legal' }, legalLine(top.status)),
     h('p', { class: 'big', 'data-test': 'rec-reason' }, top.demand.reason),
     caution(S, s.id),
-    rep ? h('p', { class: 'report', 'data-test': 'rec-report' }, rep) : null,
-    h('div', { class: 'actions' },
-      h('a', { class: 'go', 'data-test': 'btn-go', href: navUrl(S.settings.nav, s.head, s.name), target: '_blank', rel: 'noopener' }, 'Go')));
+    rep ? h('p', { class: 'report', 'data-test': 'rec-report' }, rep) : null);
 }
 
 const CAUTION_ORDER = ['relocation_note', 'works_note', 'capacity_note', 'access_note'];
@@ -69,7 +71,7 @@ function restBlock(S, A) {
       : next ? ['Next hour: ', h('b', {}, next.label)] : 'Nothing scheduled in the next hour'));
 }
 
-function standName(S, id) { const s = S.byId[id]; return s ? s.name : id; }
+function standName(S, id) { if (id == null) return "rank not on Kerb's list"; const s = S.byId[id]; return s ? s.name : id; }
 
 export function loggerBar(S, A) {
   const L = S.logger;
@@ -80,11 +82,15 @@ export function loggerBar(S, A) {
       L.candidates.length > 1 ? h('button', { class: 'btn', 'data-test': 'btn-switch', onclick: A.switchStand }, 'Other stand') : null,
       h('button', { class: 'btn', 'data-test': 'btn-dismiss', onclick: A.dismiss }, 'Not now'));
   }
+  if (L.mode === 'waiting' && S.picker) return pickerBar(S, A);
   if (L.mode === 'waiting') {
     const mins = minutesAgo(L.joinedAt, S.now);
-    const auto = S.openSource === 'auto';
+    const src = S.openSource;
+    const name = standName(S, L.stand);
+    const lead = src === 'start' ? (L.stand == null ? `Timing: ${name}` : `Timing ${name}`) : src === 'auto' ? `Logging wait at ${name}` : `Waiting at ${name}`;
+    const canSwitch = (L.stand && L.candidates.length > 1) || (S.data.chains || []).some((c) => [c.main, ...c.overflow].includes(L.stand));
     return h('footer', { class: 'bar', 'data-test': 'wait-bar' },
-      h('p', { class: 'q', 'data-test': 'wait-timer' }, `${auto ? 'Logging wait at' : 'Waiting at'} ${standName(S, L.stand)}, ${mins} min`),
+      h('p', { class: 'q', 'data-test': 'wait-timer' }, `${lead}, ${mins} min`),
       h('span', { class: 'stepper', 'data-test': 'cabs-stepper' },
         h('button', { class: 'btn', 'aria-label': 'One fewer cab ahead', onclick: () => A.report(-1) }, '−'),
         h('output', { 'aria-label': 'Cabs ahead of you' }, S.cabsAhead == null ? '?' : String(S.cabsAhead)),
@@ -92,29 +98,46 @@ export function loggerBar(S, A) {
         h('span', { class: 'note' }, 'cabs ahead')),
       h('button', { class: 'btn primary', 'data-test': 'btn-fare', onclick: A.fareIn }, 'Fare'),
       h('button', { class: 'btn', 'data-test': 'btn-left', onclick: A.left }, 'Left empty'),
-      h('button', { class: 'btn', 'data-test': 'btn-discard', onclick: A.discard }, 'Not a rank wait'),
-      (S.byId[L.stand] && L.candidates.length > 1) || (S.data.chains || []).some((c) => [c.main, ...c.overflow].includes(L.stand))
-        ? h('button', { class: 'btn', 'data-test': 'btn-switch', onclick: A.switchStand }, 'Other stand') : null);
+      L.stand == null ? h('button', { class: 'btn', 'data-test': 'btn-choose', onclick: A.openPicker }, 'Choose rank') : null,
+      canSwitch ? h('button', { class: 'btn', 'data-test': 'btn-switch', onclick: A.switchStand }, 'Other stand') : null,
+      h('button', { class: 'btn', 'data-test': 'btn-discard', onclick: A.discard }, 'Not a rank wait'));
   }
   if (L.mode === 'outcome') {
     const mins = L.departAt && L.joinedAt ? Math.round((L.departAt - L.joinedAt) / 60000) : null;
     return h('footer', { class: 'bar', 'data-test': 'outcome-bar' },
-      h('p', { class: 'q' }, `Left ${standName(S, L.stand)}${mins != null ? ` after ${mins} min` : ''}. Fare?`),
+      h('p', { class: 'q' }, `Left ${standName(S, L.stand)}${L.departAt ? ` at ${hhmm(L.departAt)}` : ''}${mins != null ? ` after ${mins} min` : ''}. Fare?`),
       h('button', { class: 'btn primary', 'data-test': 'btn-fare', onclick: A.fare }, 'Fare'),
       h('button', { class: 'btn', 'data-test': 'btn-left', onclick: A.left }, 'Left empty'),
+      h('button', { class: 'btn', 'data-test': 'btn-still', onclick: A.still }, 'Still waiting'),
       h('button', { class: 'btn', 'data-test': 'btn-discard', onclick: A.discard }, 'Not a rank wait'));
   }
-  if (S.picker) {
-    return h('footer', { class: 'bar', 'data-test': 'picker' },
-      h('p', { class: 'q' }, 'Which stand are you at?'),
-      h('div', { class: 'picker' }, S.nearby.length ? S.nearby.map((s) => h('button', { class: 'btn', 'data-test': 'pick', onclick: () => A.join(s.id) }, s.name))
-        : h('p', { class: 'note' }, 'No open stand within 1 km.')),
-      h('button', { class: 'btn', onclick: A.closePicker }, 'Cancel'));
-  }
-  return h('footer', { class: 'bar' },
-    h('button', { class: 'btn', 'data-test': 'btn-manual', onclick: A.openPicker }, 'At a rank? Log your wait'));
+  return idleBar(S, A);
 }
 
+function pickerBar(S, A) {
+  return h('footer', { class: 'bar', 'data-test': 'picker' },
+    h('p', { class: 'q' }, 'Which rank are you at?'),
+    h('div', { class: 'picker' }, S.nearby.length ? S.nearby.map((s) => h('button', { class: 'btn', 'data-test': 'pick', onclick: () => A.chooseRank(s.id) }, s.name))
+      : h('p', { class: 'note' }, 'No rank on Kerb\'s list within 1 km.')),
+    h('button', { class: 'btn', onclick: A.closePicker }, 'Cancel'));
+}
+
+const seg = (label, on, onclick, test) => h('button', { class: `seg${on ? ' on' : ''}`, role: 'radio', 'aria-checked': on ? 'true' : 'false', 'data-test': test, onclick }, label);
+
+/** Idle bar (ADR 0006): the big Auto / Manual rank-timer switch, which rank Kerb sees, and Start. */
+function idleBar(S, A) {
+  const auto = S.settings.autoLog !== false;
+  const d = S.detected;
+  const status = auto ? 'Starts by itself after 2 min at a rank'
+    : d && d.detect === 'zone' ? `You're at ${standName(S, d.stand)}`
+      : d && d.detect === 'nearest' ? `Nearest rank: ${standName(S, d.stand)}` : 'No rank spotted here';
+  return h('footer', { class: `bar idle${auto ? '' : ' manual'}` },
+    h('div', { class: 'modeswitch', role: 'radiogroup', 'aria-label': 'Rank timer', 'data-test': 'mode-switch' },
+      seg('Auto', auto, () => A.setMode(true), 'mode-auto'),
+      seg('Manual', !auto, () => A.setMode(false), 'mode-manual')),
+    h('p', { class: 'q timerstatus', 'data-test': 'timer-status' }, status),
+    h('button', { class: auto ? 'btn' : 'btn primary big', 'data-test': 'btn-start', onclick: A.start }, auto ? 'Start now' : 'Start rank timer'));
+}
 export function glance(S, A, parts) {
   const from = S.fix ? [S.fix.lon, S.fix.lat] : S.ocb;
   return [header(S, A, parts), h('main', { class: 'glance' }, recBlock(S, A, from), restBlock(S, A)), loggerBar(S, A)];

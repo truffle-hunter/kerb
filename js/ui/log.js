@@ -5,10 +5,12 @@ import { hhmm } from '../engine/time.js';
 import { distM } from '../engine/geo.js';
 import { computeStats } from '../engine/stats.js';
 import { fmtMin } from './stats.js';
+import { NOT_LISTED } from '../engine/stats.js';
 
 const OUT = { fare: 'fare', left_empty: 'left empty', unknown: 'not answered' };
 
-function nearbyStands(S, id) {
+function nearbyStands(S, id, near) {
+  if (id == null) return (near || []).map((n) => S.byId[n]).filter(Boolean); // rank not on the list: the stands near the start
   const here = S.byId[id];
   if (!here || !here.head) return [];
   return S.data.stands.filter((s) => s.head && s.id !== id && distM(here.head, s.head) <= 300)
@@ -16,8 +18,8 @@ function nearbyStands(S, id) {
 }
 
 function row(S, A, w, label) {
-  const name = S.byId[w.stand] ? S.byId[w.stand].name : w.stand;
-  const near = nearbyStands(S, w.stand);
+  const name = w.stand == null ? NOT_LISTED : S.byId[w.stand] ? S.byId[w.stand].name : w.stand;
+  const near = nearbyStands(S, w.stand, w.near);
   return h('div', { class: 'logrow', 'data-test': 'log-row' },
     h('span', {}, hhmm(new Date(w.joined_at))),
     h('span', {}, name, w.confirmed === false ? h('span', { class: 'badge' }, ' auto, unconfirmed') : null),
@@ -32,7 +34,7 @@ function row(S, A, w, label) {
       h('div', { class: 'rowactions' },
       near.length ? h('select', { class: 'small', 'data-test': 'row-stand', 'aria-label': `Wrong stand for the wait at ${hhmm(new Date(w.joined_at))}?`,
         onchange: (e) => e.target.value && A.review('edit', w.joined_at, 'stand', e.target.value) },
-      h('option', { value: '' }, 'Wrong stand?'), near.map((s) => h('option', { value: s.id }, s.name))) : null,
+      h('option', { value: '' }, w.stand == null ? 'Choose rank' : 'Wrong stand?'), near.map((s) => h('option', { value: s.id }, s.name))) : null,
       h('button', { class: 'btn small', 'data-test': 'row-delete', onclick: () => A.review('void', w.joined_at) }, 'Not a rank wait'))));
 }
 
@@ -45,7 +47,7 @@ export function log(S, A, parts) {
       h('h2', {}, 'Your waits'),
       S.storageOk ? null : h('p', { class: 'warn', 'data-test': 'storage-warning' }, "Logs can't be saved on this browser: export before closing Kerb."),
       waits.length ? h('div', {}, waits.map((w) => row(S, A, w, st.label(w.joined_at))))
-        : h('p', {}, 'No waits logged yet. Leave Kerb on screen at a rank and it logs the wait by itself after 2 minutes, or tap "At a rank? Log your wait".'),
+        : h('p', {}, 'No waits logged yet. Leave Kerb on screen at a rank: in Auto it logs the wait by itself after 2 minutes; in Manual, tap "Start rank timer".'),
       h('div', { class: 'actions' },
         h('button', { class: 'btn', 'data-test': 'btn-export-json', onclick: A.exportJSON, disabled: !waits.length }, 'Export for scoring (JSON)'),
         h('button', { class: 'btn', 'data-test': 'btn-export-csv', onclick: A.exportCSV, disabled: !waits.length }, 'Export spreadsheet (CSV)')),

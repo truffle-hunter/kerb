@@ -16,7 +16,7 @@ export function settings(S, A, parts) {
       h('label', { class: 'check' }, h('input', { type: 'checkbox', 'data-test': 'set-permit', checked: st.permit, onchange: (e) => A.setSetting('permit', e.target.checked) }),
         'I hold a daa permit (show Dublin Airport ranks)'),
       h('label', { class: 'check' }, h('input', { type: 'checkbox', 'data-test': 'set-autolog', checked: st.autoLog !== false, onchange: (e) => A.setSetting('autoLog', e.target.checked) }),
-        'Log rank waits automatically (after 2 minutes at a rank, while Kerb is on screen)'),
+        'Log rank waits automatically (after 2 minutes at a rank, while Kerb is on screen; same as the Auto / Manual switch)'),
       h('label', {}, 'Theme',
         h('select', { 'data-test': 'set-theme', onchange: (e) => A.setSetting('theme', e.target.value) },
           opt('auto', 'Automatic (dark after sunset)', st.theme), opt('dark', 'Night', st.theme), opt('light', 'Day / low sun', st.theme))),

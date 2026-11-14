@@ -32,14 +32,16 @@ button, select, input, a.button { font: inherit; color: inherit; }
 :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .boot { padding: var(--s5); color: var(--ink-dim); }
 
-#app { min-height: 100%; display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: minmax(0, 1fr); max-width: 560px; margin: 0 auto;
+/* App shell: exactly one screen tall; the logger bar is pinned at the bottom and the middle scrolls if it must (ADR 0006) */
+#app { height: 100vh; height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); max-width: 560px; margin: 0 auto;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
 
 /* Header line */
 .top { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--s3); padding: var(--s2) var(--s4) 0; min-height: 48px; }
 .top .spacer { flex: 1; }
 .top .clock { font-variant-numeric: tabular-nums; font-weight: 600; }
-.top .marker { color: var(--ink-dim); flex: 1 1 100%; font-size: var(--t0); }
+.top .marker { color: var(--ink-dim); font-size: var(--t0); }
+.top .row2 { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 0 var(--s3); align-items: baseline; }
 .top .offline { color: var(--warn); font-weight: 600; }
 .iconbtn { min-width: 44px; min-height: 44px; border: 0; background: transparent; border-radius: var(--radius-s); cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center; color: var(--ink-dim); }
@@ -47,6 +49,7 @@ button, select, input, a.button { font: inherit; color: inherit; }
 
 /* Glance: recommendation : the rest in a 1 : φ split */
 .glance { display: grid; grid-template-rows: 1.618fr 1fr; min-height: 0; }
+#app > main { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .rec { padding: var(--s3) var(--s4) var(--s4); display: flex; flex-direction: column; gap: var(--s2); }
 .rec .lead { color: var(--ink-dim); font-size: var(--t0); margin: 0; }
 .rec .name { all: unset; cursor: pointer; font-size: var(--t2); line-height: 1.05; font-weight: 750; letter-spacing: -0.01em;
@@ -126,3 +129,16 @@ button, select, input, a.button { font: inherit; color: inherit; }
 .picker { display: grid; gap: var(--s2); flex: 1 1 100%; }
 
 @media (prefers-reduced-motion: reduce) { .rec .name.changed { animation: none; } }
+
+/* ADR 0006: the big Auto / Manual rank-timer switch */
+.bar.idle { display: grid; grid-template-columns: 1fr auto; align-items: center; }
+.bar.idle .modeswitch { grid-column: 1 / -1; }
+.bar.idle.manual .timerstatus, .bar.idle.manual .btn.big { grid-column: 1 / -1; }
+.modeswitch { display: grid; grid-template-columns: 1fr 1fr; min-height: 56px; border: 2px solid var(--line); border-radius: var(--radius-m); overflow: hidden; }
+.modeswitch .seg { all: unset; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: var(--t1); font-weight: 650; color: var(--ink-dim); }
+.modeswitch .seg.on { background: var(--go); color: var(--go-ink); }
+.modeswitch .seg:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+.timerstatus { margin: 0; }
+.btn.big { min-height: 64px; width: 100%; }
+.demandrow { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
+.demandrow .go { min-height: 56px; min-width: 112px; }
