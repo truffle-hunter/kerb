@@ -1,31 +1,32 @@
-// Wait logger: a pure reducer over driver taps and GPS fixes (spec §7.5). Emits an append-only event stream;
-// waits are derived from it. A join is never recorded without a tap.
-import { distM, nearestOnLine } from './geo.js';
+// Wait logger: a pure reducer over GPS fixes and driver taps (spec §7.5, §8b; ADR 0005).
+// It emits an append-only event stream; waits are derived from it. Detection works with speed: null (iOS web):
+// presence in a stand's queue zone is the stationarity test, never speed computed from 1 Hz fixes.
+//   idle -> prompt (30 s in a zone) -> waiting (tap, or automatic after 120 s for well-placed usable stands)
+//   waiting -> outcome (left the zone) -> idle (Fare / Left empty / unknown after 30 min)
+import { distM, queueZone, headFirst, queueBearing, bearingDeg } from './geo.js';
 
 export function initial() {
-  return { mode: 'idle', stand: null, candidates: [], joinedAt: null, departAt: null, promptAt: null,
-    stillSince: null, suppressed: false, fastSince: null, lastFix: null, report: null, lastSeen: null };
+  return { mode: 'idle', stand: null, candidates: [], joinedAt: null, joinT: null, departAt: null, promptAt: null,
+    dwell: null, approach: null, movePt: null, lastFix: null, report: null, lastSeen: null,
+    outSince: null, outZ: null, fastSince: null, buf: [], anchor: null, creepSince: null, burst: null,
+    suppressedIds: [], speedSeen: false, anchorPt: null, seenAt: null, startUncertain: false };
 }
 
 const iso = (t) => t.toISOString();
 const sec = (a, b) => (a.getTime() - b.getTime()) / 1000;
+const angle = (a, b) => { const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; };
+const median = (xs) => { const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const byId = (ctx, id) => ctx.stands.find((x) => x.id === id);
 
-function speedOf(fix, last) {
-  if (fix.speed != null && Number.isFinite(fix.speed)) return fix.speed;
-  if (!last) return 0;
-  const dt = sec(fix.t, last.t);
-  return dt > 0 ? distM([fix.lon, fix.lat], [last.lon, last.lat]) / dt : 0;
-}
-
-function nearStands(p, ctx) {
+function zonesAt(p, ctx) {
   const L = ctx.params.logger;
   const out = [];
   for (const s of ctx.stands) {
     if (!s.line || !ctx.usableIds.has(s.id)) continue;
-    const d = nearestOnLine(p, s.line).distM;
-    if (d <= L.join_radius_m + (s.uncertainty_m || 0)) out.push({ id: s.id, d });
+    const z = queueZone(p, s, L);
+    if (z.in) out.push({ id: s.id, z });
   }
-  return out.sort((a, b) => a.d - b.d).map((x) => x.id);
+  return out.sort((a, b) => a.z.lateral - b.z.lateral);
 }
 
 function partners(state, ctx) {
@@ -37,53 +38,185 @@ function partners(state, ctx) {
   return [...new Set(ids)].filter((id) => id !== state.stand);
 }
 
-function joinEvent(state, input, ctx) {
+function cabsEst(stand, z, fix, L) {
+  if (stand.tier !== 'A' || fix.accuracy == null || fix.accuracy > L.cabs_est_max_accuracy_m) return null;
+  return Math.round(Math.max(0, z.s) / L.cab_m); // logged only; never displayed (ADR 0005)
+}
+
+function joinEvent(state, input, ctx, extra = {}) {
   const stand = input.stand || state.stand;
   const shown = ctx.shown(stand);
   const assisted = state.mode === 'prompt' && (!input.stand || input.stand === state.stand);
-  return { type: 'join', t: iso(input.t), stand, source: assisted ? 'assist' : 'manual', shown, versions: ctx.versions,
+  return { type: 'join', t: iso(input.t), stand, source: extra.source || (assisted ? 'assist' : 'manual'), shown, versions: ctx.versions,
     gps_accuracy_m: state.lastFix ? state.lastFix.accuracy ?? null : null,
-    followed_top_pick: !!(shown && shown.rank_order && shown.rank_order[0] === stand) };
+    followed_top_pick: !!(shown && shown.rank_order && shown.rank_order[0] === stand), ...extra };
 }
 
-const toIdle = (state, extra = {}) => ({ ...state, mode: 'idle', stand: null, candidates: [], joinedAt: null, departAt: null,
-  promptAt: null, fastSince: null, report: null, lastSeen: null, ...extra });
+const waitingState = (state, stand, joinedAt, seenAt) => ({ ...state, mode: 'waiting', stand, joinedAt, joinT: iso(joinedAt), departAt: null,
+  promptAt: null, dwell: null, report: null, lastSeen: seenAt, outSince: null, outZ: null, fastSince: null, buf: [], anchor: null, creepSince: null,
+  burst: null, speedSeen: false, anchorPt: null, seenAt: seenAt, suppressedIds: [] });
+
+const toIdle = (state, extra = {}) => ({ ...state, mode: 'idle', stand: null, candidates: [], joinedAt: null, joinT: null, departAt: null,
+  promptAt: null, dwell: null, report: null, lastSeen: null, outSince: null, outZ: null, fastSince: null, buf: [], anchor: null, creepSince: null,
+  burst: null, asserted: false, anchorPt: null, seenAt: null, suppressedIds: [], ...extra });
+
+function suppressAt(p, stand, ctx) {
+  const ids = new Set([stand]);
+  if (p) for (const c of zonesAt(p, ctx)) ids.add(c.id);
+  return [...ids];
+}
+
+function trackApproach(s, p) {
+  if (!s.movePt) { s.movePt = p; return; }
+  if (distM(s.movePt, p) >= 15) { s.approach = bearingDeg(s.movePt, p); s.movePt = p; }
+}
+
+function onFixIdle(state, s, fix, p, gap, ctx) {
+  const L = ctx.params.logger;
+  const good = fix.accuracy == null || fix.accuracy <= 30;
+  if (gap) s.dwell = null;
+  if (s.suppressedIds.length && good) {
+    const here = new Set(zonesAt(p, ctx).map((c) => c.id));
+    if (!s.suppressedIds.some((id) => here.has(id))) s.suppressedIds = []; // a good fix outside them: the car has moved on
+  }
+  if (s.dwell) {
+    const z = queueZone(p, byId(ctx, s.dwell.stand), L);
+    if (z.in && good) s.dwell = { ...s.dwell, lastIn: fix.t, outSince: null, z };
+    else {
+      const outSince = s.dwell.outSince || fix.t;
+      s.dwell = sec(fix.t, outSince) > L.dwell_tolerance_s ? null : { ...s.dwell, outSince };
+    }
+  }
+  if (!s.dwell) {
+    if (state.mode === 'prompt') { s.mode = 'idle'; s.stand = null; s.candidates = []; s.promptAt = null; }
+    trackApproach(s, p);
+    const cands = good ? zonesAt(p, ctx) : [];
+    if (cands.length) {
+      // The stop began before Kerb saw it when this is the first fix since Kerb opened or since a gap (ADR 0005 review).
+      const unseenStart = !state.lastFix || gap;
+      s.dwell = { stand: cands[0].id, since: fix.t, lastIn: fix.t, outSince: null, cands: cands.map((c) => c.id), z: cands[0].z,
+        approach: s.approach, startUncertain: unseenStart };
+    }
+  }
+  if (!s.dwell || s.suppressedIds.includes(s.dwell.stand)) return { state: s, events: [] };
+  const stand = byId(ctx, s.dwell.stand);
+  const dur = sec(s.dwell.lastIn, s.dwell.since); // only time actually seen in the zone counts
+  const qb = queueBearing(headFirst(stand.line, stand.head));
+  const opposite = s.dwell.approach != null && qb != null && angle(s.dwell.approach, qb) > L.opposite_heading_deg;
+  const auto = ctx.auto && stand.uncertainty_m != null && stand.uncertainty_m <= L.auto_max_uncertainty_m && !opposite;
+  const inNow = s.dwell.lastIn === fix.t;
+  if (auto && inNow && dur >= L.auto_join_s) {
+    const z = s.dwell.z;
+    const est = cabsEst(stand, z, fix, L);
+    const ev = joinEvent({ ...s, mode: 'idle' }, { stand: stand.id, t: s.dwell.since }, ctx,
+      { source: 'auto', detected_at: iso(fix.t), zone_dist_m: Math.round(z.lateral), ...(est != null ? { cabs_ahead_est: est } : {}),
+        ...(s.dwell.startUncertain ? { start_uncertain: true } : {}) });
+    const w = waitingState(s, stand.id, s.dwell.since, fix.t);
+    w.candidates = s.dwell.cands;
+    return { state: w, events: [ev] };
+  }
+  if (s.mode === 'idle' && dur >= L.prompt_s) {
+    return { state: { ...s, mode: 'prompt', stand: s.dwell.stand, candidates: s.dwell.cands, promptAt: fix.t }, events: [] };
+  }
+  if (s.mode === 'prompt' && !auto && sec(fix.t, s.promptAt) > L.prompt_expire_s) {
+    return { state: { ...s, mode: 'idle', stand: null, candidates: [], promptAt: null, suppressedIds: [s.dwell.stand] }, events: [] };
+  }
+  return { state: s, events: [] };
+}
+
+function onFixWaiting(state, s, fix, p, ctx) {
+  const L = ctx.params.logger;
+  const stand = byId(ctx, state.stand);
+  const good = fix.accuracy == null || fix.accuracy <= 30;
+  const events = [];
+  if (!stand || !stand.line) return { state: s, events };
+  const z = queueZone(p, stand, L);
+  const tail = z.L + L.zone_tail_factor * Math.max(z.L, 20);
+  const lateralMax = L.zone_lateral_m + Math.min(stand.uncertainty_m || 0, 15);
+  // A tapped join where the car is outside the mapped zone (tier C, or "Other stand") is anchored on where the
+  // driver was when they tapped: the zone would otherwise end it at once (ADR 0005 review).
+  if (state.anchorPt === undefined && good) s.anchorPt = state.asserted && !z.in ? p : false; // decided once, on the first good fix
+  const anchored = !!s.anchorPt;
+  const inside = anchored ? distM(p, s.anchorPt) <= lateralMax + 15 : z.in;
+  const beyond = anchored ? distM(p, s.anchorPt) - (lateralMax + 15)
+    : Math.max(z.lateral - lateralMax, -L.zone_head_margin_m - z.s, z.s - tail, 0);
+  if (inside && good) {
+    s.lastSeen = fix.t; s.outSince = null; s.outZ = null;
+    if (!state.seenAt || sec(fix.t, state.seenAt) >= L.seen_every_s) { // sparse evidence for a reload (never a track)
+      events.push({ type: 'seen', t: iso(fix.t), stand: state.stand });
+      s.seenAt = fix.t;
+    }
+  } else if (!inside && good && !s.outSince) { s.outSince = fix.t; s.outZ = z; }
+  const far = good && !inside && (anchored ? distM(p, s.anchorPt) > L.depart_far_m
+    : z.lateral > L.depart_far_m || z.s < -L.depart_far_m || z.s > tail + L.depart_far_m);
+  s.fastSince = fix.speed != null && fix.speed > L.depart_speed_mps ? state.fastSince || fix.t : null;
+  // Leaving needs as much evidence as staying: 30 s outside, or 10 s outside once clearly displaced (drift stays near).
+  const outFor = s.outSince ? sec(fix.t, s.outSince) : 0;
+  const outLong = s.outSince && good && (outFor >= L.depart_out_s || (outFor >= L.depart_out_moved_s && beyond >= L.depart_moved_m));
+  const fast = s.fastSince && sec(fix.t, s.fastSince) >= L.depart_speed_s;
+  if (outLong || far || fast) {
+    let t = [s.outSince, s.fastSince, fix.t].filter(Boolean).reduce((a, b) => (a < b ? a : b));
+    const exit = s.outZ || z;
+    let leftVia = anchored ? 'unknown' : exit.s < -L.zone_head_margin_m ? 'head' : exit.s > tail ? 'tail' : 'side';
+    const uncertain = !!(state.lastSeen && sec(t, state.lastSeen) > L.gap_s);
+    if (uncertain) { t = state.lastSeen; leftVia = 'unknown'; }
+    events.push({ type: 'depart', t: iso(t), stand: state.stand, left_via: leftVia,
+      reason: far ? 'far' : outLong ? 'out_of_zone' : 'speed', ...(uncertain ? { uncertain: true } : {}) });
+    return { state: { ...s, mode: 'outcome', departAt: t, buf: [], anchor: null, creepSince: null, burst: null }, events };
+  }
+  // Moving up the rank (ADR 0005). Creeps never end the wait.
+  // With a speed reading (Doppler: Android, iPhones while moving) a creep is a short burst of slow movement, integrated
+  // to metres; once a device has reported speed in this wait, only this method is used. Without speed, a sustained
+  // drop in the 30 s median distance to the head is logged as approximate only (measured: about 6 in 10 one-cab moves
+  // found, about one fake per 10 minutes on correlated urban noise).
+  if (fix.speed != null) s.speedSeen = true;
+  const b = state.burst;
+  if (fix.speed != null && fix.speed >= L.creep_speed_mps && inside) {
+    const dt = state.lastFix ? Math.min(2, Math.max(0, sec(fix.t, state.lastFix.t))) : 1;
+    s.burst = { since: b ? b.since : fix.t, dist: (b ? b.dist : 0) + fix.speed * dt, lastMove: fix.t };
+  } else if (b) {
+    if (sec(fix.t, b.lastMove) >= 2) { // any later fix, with speed or without, closes the burst
+      if (inside && b.dist >= L.creep_speed_min_m && b.dist <= L.creep_speed_max_m) { // a burst that left the zone is a departure
+        const est = cabsEst(stand, { s: z.s }, fix, L);
+        events.push({ type: 'creep', t: iso(b.since), stand: state.stand, method: 'speed', moved_m: Math.round(b.dist), d_head_m: Math.round(z.s),
+          accuracy: fix.accuracy ?? null, ...(est != null ? { cabs_ahead_est: est } : {}) });
+      }
+      s.burst = null;
+    } else if (fix.speed != null) {
+      const dt = state.lastFix ? Math.min(2, Math.max(0, sec(fix.t, state.lastFix.t))) : 1;
+      s.burst = { ...b, dist: b.dist + fix.speed * dt };
+    }
+  } else if (!s.speedSeen && fix.speed == null && z.in && (fix.accuracy == null || fix.accuracy <= L.creep_max_accuracy_m)) {
+    s.buf = [...state.buf, { t: fix.t, s: z.s }].filter((q) => sec(fix.t, q.t) <= L.creep_window_s).slice(-30);
+    if (s.buf.length >= 5 && sec(fix.t, s.buf[0].t) >= L.creep_window_s / 2) {
+      const m = median(s.buf.map((q) => q.s));
+      if (s.anchor == null) s.anchor = m;
+      else if (m <= s.anchor - L.creep_min_m) {
+        s.creepSince = state.creepSince || fix.t;
+        if (sec(fix.t, s.creepSince) >= L.creep_hold_s) {
+          const est = cabsEst(stand, { s: m }, fix, L);
+          events.push({ type: 'creep', t: iso(s.creepSince), stand: state.stand, method: 'position', approximate: true, d_head_m: Math.round(m),
+            moved_m: Math.round(s.anchor - m), accuracy: fix.accuracy ?? null, ...(est != null ? { cabs_ahead_est: est } : {}) });
+          s.anchor = m;
+          s.creepSince = null;
+        }
+      } else s.creepSince = null;
+    }
+  }
+  return { state: s, events };
+}
 
 function onFix(state, fix, ctx) {
   const L = ctx.params.logger;
   const p = [fix.lon, fix.lat];
-  const v = speedOf(fix, state.lastFix);
+  const gap = !!(state.lastFix && sec(fix.t, state.lastFix.t) > L.gap_s);
   const s = { ...state, lastFix: fix };
-  const events = [];
-  if (state.mode === 'idle' || state.mode === 'prompt') {
-    if (v >= L.stationary_mps) return { state: toIdle(s, { stillSince: null, suppressed: false }), events };
-    s.stillSince = s.stillSince || fix.t;
-    if (state.mode === 'prompt') {
-      if (sec(fix.t, state.promptAt) > L.prompt_expire_s) return { state: toIdle(s, { suppressed: true }), events };
-      return { state: s, events };
-    }
-    if (!s.suppressed && sec(fix.t, s.stillSince) >= L.stationary_s) {
-      const cands = nearStands(p, ctx);
-      if (cands.length) return { state: { ...s, mode: 'prompt', candidates: cands, stand: cands[0], promptAt: fix.t }, events };
-    }
-    return { state: s, events };
-  }
-  if (state.mode === 'waiting') {
-    const stand = ctx.stands.find((x) => x.id === state.stand);
-    const far = stand && stand.line ? nearestOnLine(p, stand.line).distM > L.depart_m : false;
-    if (!far) s.lastSeen = fix.t;
-    s.fastSince = v > L.depart_mps ? state.fastSince || fix.t : null;
-    if (far || (s.fastSince && sec(fix.t, s.fastSince) >= L.depart_s)) {
-      let t = s.fastSince || fix.t;
-      // After a gap in fixes (driver switched to the nav app) the departure happened somewhere in the gap:
-      // stamp it at the last sighting at the stand and mark it uncertain, never at the late evidence.
-      const uncertain = !!(state.lastSeen && sec(t, state.lastSeen) > (L.gap_s ?? 120));
-      if (uncertain) t = state.lastSeen;
-      events.push({ type: 'depart', t: iso(t), stand: state.stand, ...(uncertain ? { uncertain: true } : {}) });
-      return { state: { ...s, mode: 'outcome', departAt: t, fastSince: null }, events };
-    }
-  }
-  return { state: s, events };
+  if (state.mode === 'idle' || state.mode === 'prompt') return onFixIdle(state, s, fix, p, gap, ctx);
+  if (state.mode === 'waiting') return onFixWaiting(state, s, fix, p, ctx);
+  // outcome: still watching for the next rank, so a driver who never answers does not go blind (ADR 0005 review)
+  const r = onFixIdle({ ...state, mode: 'idle' }, { ...s, mode: 'idle' }, fix, p, gap, ctx);
+  if (r.events.some((e) => e.type === 'join')) return { state: r.state, events: [outcome(state, fix.t, 'unknown', 'new_join'), ...r.events] };
+  return { state: { ...s, dwell: r.state.dwell, approach: r.state.approach, movePt: r.state.movePt, suppressedIds: r.state.suppressedIds }, events: [] };
 }
 
 function outcome(state, t, value, source) {
@@ -93,34 +226,47 @@ function outcome(state, t, value, source) {
   return ev;
 }
 
-/** step(state, input, ctx) -> {state, events}. Every input carries `t` (Date); fixes carry it in `fix.t`. */
+/** step(state, input, ctx) -> {state, events}. Every input carries `t` (Date); fixes carry it in `fix.t`.
+ *  ctx.auto enables automatic joins (Settings: "Log rank waits automatically"). */
 export function step(state, input, ctx) {
   const L = ctx.params.logger;
   switch (input.type) {
     case 'fix': return onFix(state, input.fix, ctx);
     case 'tick': {
-      if (state.mode === 'prompt' && sec(input.t, state.promptAt) > L.prompt_expire_s) return { state: toIdle(state, { suppressed: true }), events: [] };
+      if (state.mode === 'prompt' && sec(input.t, state.promptAt) > L.prompt_expire_s) {
+        return { state: { ...state, mode: 'idle', stand: null, candidates: [], promptAt: null, suppressedIds: [state.dwell ? state.dwell.stand : state.stand] }, events: [] };
+      }
       if (state.mode === 'outcome' && sec(input.t, state.departAt) >= L.outcome_timeout_s) {
         return { state: toIdle(state), events: [outcome(state, input.t, 'unknown', 'timeout')] };
       }
       return { state, events: [] };
     }
     case 'dismiss':
-      return state.mode === 'prompt' ? { state: toIdle(state, { suppressed: true }), events: [] } : { state, events: [] };
+      return state.mode === 'prompt' ? { state: { ...state, mode: 'idle', stand: null, candidates: [], promptAt: null, suppressedIds: [state.stand] }, events: [] } : { state, events: [] };
     case 'tap_join': {
       if (!input.stand && !state.stand) return { state, events: [] };
       const events = [];
       if (state.mode === 'waiting' || state.mode === 'outcome') events.push(outcome(state, input.t, 'unknown', 'new_join'));
       const j = joinEvent(state.mode === 'waiting' || state.mode === 'outcome' ? { ...state, mode: 'idle' } : state, input, ctx);
       events.push(j);
-      return { state: { ...state, mode: 'waiting', stand: j.stand, joinedAt: input.t, departAt: null, promptAt: null, fastSince: null, report: null, lastSeen: input.t }, events };
+      const w = waitingState(state, j.stand, input.t, input.t);
+      w.candidates = state.candidates;
+      w.asserted = true;
+      w.anchorPt = undefined; // set from the next fix: the tap position, if the car is outside the mapped zone
+      return { state: w, events };
+    }
+    case 'tap_discard': {
+      if (state.mode !== 'waiting' && state.mode !== 'outcome') return { state, events: [] };
+      const p = state.lastFix ? [state.lastFix.lon, state.lastFix.lat] : null;
+      return { state: toIdle(state, { suppressedIds: suppressAt(p, state.stand, ctx) }),
+        events: [{ type: 'void', t: iso(input.t), wait: state.joinT, stand: state.stand, source: 'bar' }] };
     }
     case 'tap_switch': {
       const next = partners(state, ctx)[0];
       if (!next) return { state, events: [] };
       if (state.mode === 'prompt') return { state: { ...state, stand: next, candidates: [...state.candidates.filter((c) => c !== next), state.stand] }, events: [] };
       if (state.mode === 'waiting') {
-        return { state: { ...state, stand: next, candidates: [...state.candidates.filter((c) => c !== next), state.stand] },
+        return { state: { ...state, stand: next, candidates: [...state.candidates.filter((c) => c !== next), state.stand], asserted: true, anchorPt: undefined },
           events: [{ type: 'switch_stand', t: iso(input.t), from: state.stand, stand: next }] };
       }
       return { state, events: [] };
@@ -131,51 +277,80 @@ export function step(state, input, ctx) {
         events: [{ type: 'report', t: iso(input.t), stand: state.stand, cabsAhead: input.cabsAhead ?? null, people: input.people ?? null }] };
     case 'tap_fare_in':
       if (state.mode !== 'waiting') return { state, events: [] };
-      return { state: toIdle(state), events: [{ type: 'fare_in', t: iso(input.t), stand: state.stand }, outcome(state, input.t, 'fare', 'fare_in')] };
+      return { state: toIdle(state, { suppressedIds: [state.stand] }), events: [{ type: 'fare_in', t: iso(input.t), stand: state.stand }, outcome(state, input.t, 'fare', 'fare_in')] };
     case 'tap_fare':
     case 'tap_left':
       if (state.mode !== 'waiting' && state.mode !== 'outcome') return { state, events: [] };
-      return { state: toIdle(state), events: [outcome(state, input.t, input.type === 'tap_fare' ? 'fare' : 'left_empty', 'tap')] };
+      return { state: toIdle(state, { suppressedIds: state.mode === 'waiting' ? [state.stand] : [] }),
+        events: [outcome(state, input.t, input.type === 'tap_fare' ? 'fare' : 'left_empty', 'tap')] };
     case 'cancel':
       if (state.mode !== 'waiting') return { state, events: [] };
-      return { state: toIdle(state), events: [{ type: 'cancel', t: iso(input.t), stand: state.stand }] };
+      return { state: toIdle(state, { suppressedIds: [state.stand] }), events: [{ type: 'cancel', t: iso(input.t), stand: state.stand }] };
     default:
       throw new Error(`logger.step: unknown input type ${JSON.stringify(input.type)}`);
   }
 }
 
-/** Waits derived from the event stream. Unfinished waits are left out; cancelled waits are dropped. */
+const DRIVER = new Set(['report', 'switch_stand', 'fare_in', 'confirm', 'edit']);
+
+/** Waits derived from the event stream (spec §7.5, ADR 0005). Unfinished waits are left out; cancelled and voided
+ *  waits are dropped; review edits are applied; auto waits are unconfirmed until the driver touches them. */
 export function deriveWaits(events) {
   const waits = [];
   let w = null;
+  const close = () => { delete w._fareIn; delete w._depart; waits.push(w); w = null; };
   for (const e of events) {
     if (e.type === 'join') {
       w = { stand: e.stand, joined_at: e.t, ended_at: null, wait_min: null, outcome: null, censored: null,
         followed_top_pick: e.followed_top_pick, join_source: e.source, cabs_ahead: null, people: null,
-        shown: e.shown, versions: e.versions, gps_accuracy_m: e.gps_accuracy_m, end_uncertain: false, _fareIn: null, _depart: null };
+        shown: e.shown, versions: e.versions, gps_accuracy_m: e.gps_accuracy_m, end_uncertain: false,
+        confirmed: e.source !== 'auto', detected_at: e.detected_at || null, creeps: 0, left_via: null, start_uncertain: !!e.start_uncertain,
+        cabs_ahead_est: e.cabs_ahead_est ?? null, _fareIn: null, _depart: null };
     } else if (!w) {
       continue;
     } else if (e.type === 'report') {
-      w.cabs_ahead = e.cabsAhead; w.people = e.people;
+      w.cabs_ahead = e.cabsAhead; w.people = e.people; w.confirmed = true;
     } else if (e.type === 'switch_stand') {
-      w.stand = e.stand;
+      w.stand = e.stand; w.confirmed = true;
+    } else if (e.type === 'creep') {
+      w.creeps++;
     } else if (e.type === 'fare_in') {
       w._fareIn = e.t;
     } else if (e.type === 'depart') {
       w._depart = e.t;
+      w.left_via = e.left_via || null;
       if (e.uncertain) w.end_uncertain = true;
-    } else if (e.type === 'cancel') {
+    } else if (e.type === 'cancel' || (e.type === 'void' && e.wait === w.joined_at)) {
       w = null;
     } else if (e.type === 'outcome') {
       w.ended_at = w._fareIn || w._depart || e.end_hint || e.t;
       w.wait_min = (Date.parse(w.ended_at) - Date.parse(w.joined_at)) / 60000;
       w.outcome = e.outcome;
       // An uncertain end only bounds the wait from below, so even a fare counts as censored.
-      w.censored = e.outcome !== 'fare' || w.end_uncertain;
-      delete w._fareIn; delete w._depart;
-      waits.push(w);
-      w = null;
+      // Unseen start or uncertain end: the wait lasted at least this long, so even a fare counts as censored.
+      w.censored = e.outcome !== 'fare' || w.end_uncertain || w.start_uncertain;
+      if (e.source === 'tap' || e.source === 'fare_in') w.confirmed = true;
+      close();
     }
   }
-  return waits;
+  // Review events (Log screen) refer to a finished wait by its join time.
+  const byJoin = new Map(waits.map((x) => [x.joined_at, x]));
+  const voided = new Set();
+  for (const e of events) {
+    const x = byJoin.get(e.wait);
+    if (!x) continue;
+    if (e.type === 'void') voided.add(e.wait);
+    else if (e.type === 'confirm') x.confirmed = true;
+    else if (e.type === 'edit') {
+      x.confirmed = true;
+      if (e.field === 'stand') x.stand = e.value;
+      if (e.field === 'outcome' && ['fare', 'left_empty', 'unknown'].includes(e.value)) {
+        x.outcome = e.value;
+        x.censored = e.value !== 'fare' || x.end_uncertain || x.start_uncertain;
+      }
+    }
+  }
+  return waits.filter((x) => !voided.has(x.joined_at));
 }
+
+export { DRIVER as DRIVER_EVENTS };

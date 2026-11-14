@@ -102,11 +102,26 @@ button, select, input, a.button { font: inherit; color: inherit; }
 .sheet .check { display: flex; gap: var(--s3); align-items: center; min-height: 44px; }
 .sheet .check input { width: 24px; height: 24px; }
 .mapbox { width: 100%; max-width: 100%; height: auto; aspect-ratio: 1.618 / 1; border-radius: var(--radius-m); background: var(--panel); display: block; }
-.logrow { display: grid; grid-template-columns: auto 1fr auto; gap: var(--s3); padding: var(--s2) 0; border-bottom: 1px solid var(--line);
-  font-variant-numeric: tabular-nums; }
+.logrow { display: grid; grid-template-columns: auto 1fr auto; gap: var(--s1) var(--s3); padding: var(--s3) 0; border-bottom: 1px solid var(--line);
+  font-variant-numeric: tabular-nums; align-items: baseline; }
+.logrow .rowlabel { grid-column: 1 / -1; }
+.logrow .rowactions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: var(--s2); }
+.logrow .badge { color: var(--ink-dim); font-size: 14px; }
+.logrow .rowactions:empty { display: none; }
+.logrow .rowedit { grid-column: 1 / -1; }
+.logrow .rowedit > summary { cursor: pointer; color: var(--ink-dim); min-height: 44px; display: flex; align-items: center; width: max-content; }
+.sheet select.small { min-height: 44px; }
+.statrow { display: grid; gap: var(--s1); padding: var(--s2) 0; border-bottom: 1px solid var(--line); }
+.statrow .statname { font-weight: 650; }
+.bands { display: grid; gap: var(--s2); }
+.band { display: grid; grid-template-columns: 4.2em 1fr 6.5em; gap: var(--s3); align-items: center; font-variant-numeric: tabular-nums; }
+.bandbar { height: 14px; background: var(--track); border-radius: 3px; overflow: hidden; }
+.bandbar > i { display: block; height: 100%; background: var(--accent); }
+.bandval { text-align: right; color: var(--ink-dim); }
 .overlay { position: fixed; inset: 0; background: color-mix(in srgb, var(--bg) 88%, transparent); display: grid; place-items: end center;
-  padding: var(--s4); z-index: 10; }
-.overlay .card { background: var(--panel); border-radius: var(--radius-m); padding: var(--s5) var(--s4); max-width: 520px; display: grid; gap: var(--s4); }
+  padding: var(--s4); z-index: 10; overflow-y: auto; overscroll-behavior: contain; }
+.overlay .card { background: var(--panel); border-radius: var(--radius-m); padding: var(--s5) var(--s4); max-width: 520px; display: grid; gap: var(--s4);
+  max-height: 100%; overflow-y: auto; }
 .overlay .card p { line-height: 1.5; margin: 0; font-size: 18px; }
 .picker { display: grid; gap: var(--s2); flex: 1 1 100%; }
 

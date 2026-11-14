@@ -17,6 +17,7 @@ import { detail } from './ui/detail.js';
 import { log } from './ui/log.js';
 import { settings } from './ui/settings.js';
 import { firstrun } from './ui/firstrun.js';
+import { stats as statsView } from './ui/stats.js';
 import { drawDetailMap } from './ui/map.js';
 import { fetchWeather } from './platform/weather.js';
 import { liveItems } from './platform/relay.js';
@@ -34,9 +35,9 @@ const weatherOn = !dev || new URLSearchParams(location.search).get('weather') ==
 const S = {
   ready: false, data: null, byId: {}, ctx: null, now: clockNow(), fix: null, loc: 'pending', km: null, kmRequested: null,
   recs: [], next: null, logger: loggerInitial(), events: [], waits: [], usableIds: new Set(),
-  settings: { nav: 'google', permit: false, theme: 'auto', shift: false, relay: '' },
+  settings: { nav: 'google', permit: false, theme: 'auto', shift: false, relay: '', autoLog: true },
   view: 'glance', detailId: null, weather: null, live: null, storageOk: true, firstRun: false, lastTop: null, changed: false,
-  online: navigator.onLine, picker: false, timetable: { current: true, to: null }, eventsStale: false, updateReady: false, nearby: [], cabsAhead: null, lastReport: null, ocb: OCB, device: null,
+  online: navigator.onLine, picker: false, openSource: null, timetable: { current: true, to: null }, eventsStale: false, updateReady: false, nearby: [], cabsAhead: null, lastReport: null, ocb: OCB, device: null,
 };
 let worker = null, workerReady = false, workerFailed = false, loc = null, weatherAt = -Infinity, relayAt = -Infinity;
 const hooks = { afterRender: [] };
@@ -83,6 +84,7 @@ function snapshot(id) {
 
 function loggerCtx() {
   return { stands: S.data.stands, usableIds: S.usableIds, chains: S.data.chains, params: S.data.params, shown: snapshot,
+    auto: S.settings.autoLog !== false, // ADR 0005: automatic joins unless switched off in Settings
     versions: { model: MODEL, params: S.data.params.version, bundle: S.data.meta.bundle_version }, device: S.device };
 }
 
@@ -93,7 +95,7 @@ function feedLogger(input) {
   for (const ev of r.events) {
     S.events.push(ev);
     store.append(ev).catch(() => { S.storageOk = false; render(); }); // e.g. quota or eviction: say so, never lose silently
-    if (ev.type === 'join') S.cabsAhead = null;
+    if (ev.type === 'join') { S.cabsAhead = null; S.openSource = ev.source; }
     if (ev.type === 'report') S.lastReport = { stand: ev.stand, cabsAhead: ev.cabsAhead, people: ev.people, t: new Date(ev.t) };
   }
   if (r.events.length) S.waits = deriveWaits(S.events);
@@ -103,13 +105,24 @@ function feedLogger(input) {
 function restoreLogger(events) {
   let open = null;
   for (const e of events) {
-    if (open && e.type !== 'outcome' && e.type !== 'cancel') open.lastSeen = new Date(e.t); // last evidence of this wait
-    if (e.type === 'join') open = { stand: e.stand, joinedAt: new Date(e.t), departAt: null, lastSeen: new Date(e.t) };
+    if (open && e.type !== 'outcome' && e.type !== 'cancel' && e.type !== 'void') open.lastSeen = new Date(e.t); // last evidence of this wait
+    // an automatic join is backdated; Kerb had seen the car until at least the moment it detected the wait
+    if (e.type === 'join') open = { stand: e.stand, joinedAt: new Date(e.t), joinT: e.t, departAt: null, lastSeen: new Date(e.detected_at || e.t), source: e.source };
     else if (e.type === 'switch_stand' && open) open.stand = e.stand;
     else if (e.type === 'depart' && open) open.departAt = new Date(e.t);
-    else if (e.type === 'outcome' || e.type === 'cancel') open = null;
+    else if (e.type === 'outcome' || e.type === 'cancel' || (e.type === 'void' && open && e.wait === open.joinT)) open = null;
   }
-  if (open) S.logger = { ...loggerInitial(), mode: open.departAt ? 'outcome' : 'waiting', ...open };
+  if (open) {
+    const { source, ...rest } = open;
+    S.logger = { ...loggerInitial(), mode: open.departAt ? 'outcome' : 'waiting', ...rest, seenAt: rest.lastSeen };
+    S.openSource = source;
+  } else {
+    // "Not a rank wait" tapped shortly before Kerb was closed: keep that stand quiet until the car has moved away
+    const last = events[events.length - 1];
+    if (last && last.type === 'void' && last.source === 'bar' && clockNow() - Date.parse(last.t) < 30 * 60000) {
+      S.logger = { ...loggerInitial(), suppressedIds: [last.stand] };
+    }
+  }
 }
 
 function requestKm() {
@@ -199,6 +212,15 @@ const A = {
   join(id) { feedLogger({ type: 'tap_join', stand: id, t: at() }); S.picker = false; render(); },
   switchStand() { feedLogger({ type: 'tap_switch', t: at() }); render(); },
   dismiss() { feedLogger({ type: 'dismiss', t: at() }); render(); },
+  discard() { feedLogger({ type: 'tap_discard', t: at() }); render(); },
+  openStats() { S.view = 'stats'; render(); },
+  review(type, wait, field, value) { // Log review: confirm / edit / void a finished wait (append-only, ADR 0005)
+    const ev = { type, t: at().toISOString(), wait, source: 'review', ...(field ? { field, value } : {}) };
+    S.events.push(ev);
+    store.append(ev).catch(() => { S.storageOk = false; render(); });
+    S.waits = deriveWaits(S.events);
+    render();
+  },
   fareIn() { feedLogger({ type: 'tap_fare_in', t: at() }); render(); },
   fare() { feedLogger({ type: 'tap_fare', t: at() }); render(); },
   left() { feedLogger({ type: 'tap_left', t: at() }); render(); },
@@ -238,6 +260,7 @@ function render() {
   const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.test : null;
   const parts = { ...dublinParts(S.now), time: hhmm(S.now) };
   const view = S.view === 'detail' ? detail(S, A, S.detailId, parts) : S.view === 'log' ? log(S, A, parts)
+    : S.view === 'stats' ? statsView(S, A, parts)
     : S.view === 'settings' ? settings(S, A, parts) : glance(S, A, parts);
   root.replaceChildren(...view, ...(S.firstRun ? [firstrun(A)] : []));
   S.changed = false;

@@ -17,6 +17,7 @@ export function header(S, A, parts) {
       stale ? 'Data out of date' : `Data ${shortDate(S.data.meta.built_at)}`),
     S.updateReady ? h('button', { class: 'btn primary small', 'data-test': 'update-ready', onclick: () => location.reload() }, 'Update ready: reload') : null,
     h('span', { class: 'spacer' }),
+    iconButton('stats', 'Your stats', A.openStats, 'nav-stats'),
     iconButton('log', 'Wait log', A.openLog, 'nav-log'),
     iconButton('settings', 'Settings', A.openSettings, 'nav-settings'),
     h('span', { class: 'marker', 'data-test': 'marker' }, 'Guess · no driver data yet'));
@@ -81,8 +82,9 @@ export function loggerBar(S, A) {
   }
   if (L.mode === 'waiting') {
     const mins = minutesAgo(L.joinedAt, S.now);
+    const auto = S.openSource === 'auto';
     return h('footer', { class: 'bar', 'data-test': 'wait-bar' },
-      h('p', { class: 'q', 'data-test': 'wait-timer' }, `Waiting at ${standName(S, L.stand)}, ${mins} min`),
+      h('p', { class: 'q', 'data-test': 'wait-timer' }, `${auto ? 'Logging wait at' : 'Waiting at'} ${standName(S, L.stand)}, ${mins} min`),
       h('span', { class: 'stepper', 'data-test': 'cabs-stepper' },
         h('button', { class: 'btn', 'aria-label': 'One fewer cab ahead', onclick: () => A.report(-1) }, '−'),
         h('output', { 'aria-label': 'Cabs ahead of you' }, S.cabsAhead == null ? '?' : String(S.cabsAhead)),
@@ -90,14 +92,17 @@ export function loggerBar(S, A) {
         h('span', { class: 'note' }, 'cabs ahead')),
       h('button', { class: 'btn primary', 'data-test': 'btn-fare', onclick: A.fareIn }, 'Fare'),
       h('button', { class: 'btn', 'data-test': 'btn-left', onclick: A.left }, 'Left empty'),
-      (S.byId[L.stand] && L.candidates.length) || (S.data.chains || []).some((c) => [c.main, ...c.overflow].includes(L.stand))
+      h('button', { class: 'btn', 'data-test': 'btn-discard', onclick: A.discard }, 'Not a rank wait'),
+      (S.byId[L.stand] && L.candidates.length > 1) || (S.data.chains || []).some((c) => [c.main, ...c.overflow].includes(L.stand))
         ? h('button', { class: 'btn', 'data-test': 'btn-switch', onclick: A.switchStand }, 'Other stand') : null);
   }
   if (L.mode === 'outcome') {
+    const mins = L.departAt && L.joinedAt ? Math.round((L.departAt - L.joinedAt) / 60000) : null;
     return h('footer', { class: 'bar', 'data-test': 'outcome-bar' },
-      h('p', { class: 'q' }, `You left ${standName(S, L.stand)}. Fare or left empty?`),
+      h('p', { class: 'q' }, `Left ${standName(S, L.stand)}${mins != null ? ` after ${mins} min` : ''}. Fare?`),
       h('button', { class: 'btn primary', 'data-test': 'btn-fare', onclick: A.fare }, 'Fare'),
-      h('button', { class: 'btn', 'data-test': 'btn-left', onclick: A.left }, 'Left empty'));
+      h('button', { class: 'btn', 'data-test': 'btn-left', onclick: A.left }, 'Left empty'),
+      h('button', { class: 'btn', 'data-test': 'btn-discard', onclick: A.discard }, 'Not a rank wait'));
   }
   if (S.picker) {
     return h('footer', { class: 'bar', 'data-test': 'picker' },
