@@ -38,6 +38,12 @@ function row(S, A, w, label) {
       h('button', { class: 'btn small', 'data-test': 'row-delete', onclick: () => A.review('void', w.joined_at) }, 'Not a rank wait'))));
 }
 
+function lastExportLine(S) {
+  if (!S.lastExport) return 'Not exported yet. Export for scoring once a week and send the file.';
+  const days = Math.floor((S.now - Date.parse(S.lastExport)) / 86400000);
+  return `Last export for scoring: ${days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`}.`;
+}
+
 export function log(S, A, parts) {
   const waits = [...S.waits].reverse();
   const st = computeStats(S.waits, S.now, { params: S.data.params, byId: S.byId });
@@ -51,6 +57,7 @@ export function log(S, A, parts) {
       h('div', { class: 'actions' },
         h('button', { class: 'btn', 'data-test': 'btn-export-json', onclick: A.exportJSON, disabled: !waits.length }, 'Export for scoring (JSON)'),
         h('button', { class: 'btn', 'data-test': 'btn-export-csv', onclick: A.exportCSV, disabled: !waits.length }, 'Export spreadsheet (CSV)')),
+      h('p', { class: 'note', 'data-test': 'last-export' }, lastExportLine(S)),
       h('p', { class: 'note' }, 'Uploads: off. Your log stays on this phone until you export it.')),
   ];
 }

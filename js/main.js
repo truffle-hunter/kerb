@@ -9,7 +9,7 @@ import { status, isUsable } from './engine/legal.js';
 import { distM } from './engine/geo.js';
 import { recommend, score } from './engine/demand.js';
 import { upcoming, nextImportant, triggersAround, timetableStatus } from './engine/triggers.js';
-import { initial as loggerInitial, step as loggerStep, deriveWaits, detectStand } from './engine/logger.js';
+import { initial as loggerInitial, step as loggerStep, deriveWaits, detectStand, autoStartFor } from './engine/logger.js';
 import { toJSON, toCSV } from './engine/export.js';
 import { sunElevation } from './ui/dom.js';
 import { glance } from './ui/glance.js';
@@ -18,6 +18,8 @@ import { log } from './ui/log.js';
 import { settings } from './ui/settings.js';
 import { firstrun } from './ui/firstrun.js';
 import { stats as statsView } from './ui/stats.js';
+import { phoneCheck, gatherProbe } from './ui/phonecheck.js';
+import { checkRows, reportText } from './engine/phonecheck.js';
 import { drawDetailMap } from './ui/map.js';
 import { fetchWeather } from './platform/weather.js';
 import { liveItems } from './platform/relay.js';
@@ -38,6 +40,7 @@ const S = {
   settings: { nav: 'google', permit: false, theme: 'auto', shift: false, relay: '', autoLog: true },
   view: 'glance', detailId: null, weather: null, live: null, storageOk: true, firstRun: false, lastTop: null, changed: false,
   online: navigator.onLine, picker: false, openSource: null, timetable: { current: true, to: null }, eventsStale: false, updateReady: false, nearby: [], cabsAhead: null, lastReport: null, ocb: OCB, device: null,
+  fixLog: [], offlineBootAt: null, lastExport: null, check: null, // Phone check and export reminder (2026-11-14)
 };
 let worker = null, workerReady = false, workerFailed = false, loc = null, weatherAt = -Infinity, relayAt = -Infinity;
 const hooks = { afterRender: [] };
@@ -154,6 +157,8 @@ function startWorker() {
 function onFix(f) {
   const wasOk = S.loc === 'ok';
   S.fix = f;
+  S.fixLog.push({ accuracy: f.accuracy, speed: f.speed }); // Phone check: accuracy and speed only, in memory
+  if (S.fixLog.length > 60) S.fixLog.shift();
   S.loc = 'ok';
   const loggerChanged = feedLogger({ type: 'fix', fix: f });
   const p = [f.lon, f.lat];
@@ -164,7 +169,9 @@ function onFix(f) {
   let seenChanged = false;
   if (S.view === 'glance' && S.logger.mode === 'idle') {
     const d = detectStand(f, clockNow(), loggerCtx());
-    seenChanged = !S.detected || d.stand !== S.detected.stand || d.detect !== S.detected.detect;
+    const a = autoStartFor(S.logger, loggerCtx());
+    seenChanged = !S.detected || d.stand !== S.detected.stand || d.detect !== S.detected.detect
+      || JSON.stringify(a) !== JSON.stringify(S.autoStart);
   }
   if (moved || !wasOk) { recompute(); render(); } else if (loggerChanged || seenChanged) render();
 }
@@ -231,6 +238,21 @@ const A = {
     feedLogger({ type: 'tap_discard', t: at() }); render();
   },
   openStats() { S.view = 'stats'; render(); },
+  async openCheck() {
+    S.view = 'check'; S.check = null; render();
+    const probe = await gatherProbe(S, clockNow().toISOString());
+    if (S.view !== 'check') return;
+    const rows = checkRows(probe);
+    S.check = { rows, text: reportText(rows, probe), copied: false };
+    render();
+  },
+  async copyReport() {
+    if (!S.check) return;
+    try { await navigator.clipboard.writeText(S.check.text); S.check.copied = true; render(); } catch (e) {
+      const t = document.querySelector('[data-test=check-report]'); // no clipboard access: select it for a long-press copy
+      if (t) { t.focus(); t.select(); }
+    }
+  },
   review(type, wait, field, value) { // Log review: confirm / edit / void a finished wait (append-only, ADR 0005)
     const ev = { type, t: at().toISOString(), wait, source: 'review', ...(field ? { field, value } : {}) };
     S.events.push(ev);
@@ -265,7 +287,8 @@ const A = {
   },
   async exportJSON() {
     const meta = { model: MODEL, params_version: S.data.params.version, bundle_version: S.data.meta.bundle_version, exported_at: at().toISOString() };
-    await exportFile(`kerb-waits-${dublinParts(at()).date}.json`, toJSON({ events: S.events, waits: S.waits, meta, device: S.device }), 'application/json');
+    const how = await exportFile(`kerb-waits-${dublinParts(at()).date}.json`, toJSON({ events: S.events, waits: S.waits, meta, device: S.device }), 'application/json');
+    if (how !== 'cancelled') { S.lastExport = at().toISOString(); store.setSetting('lastExport', S.lastExport); render(); }
   },
   async exportCSV() { await exportFile(`kerb-waits-${dublinParts(at()).date}.csv`, toCSV(S.waits), 'text/csv'); },
   firstRunOk() { S.firstRun = false; store.setSetting('seenFirstRun', true); render(); },
@@ -276,9 +299,13 @@ function render() {
   const root = document.getElementById('app');
   const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.test : null;
   const parts = { ...dublinParts(S.now), time: hhmm(S.now) };
-  if (S.view === 'glance' && S.data) S.detected = detectStand(S.fix, clockNow(), loggerCtx()); // which rank the idle bar names
+  if (S.view === 'glance' && S.data) { // which rank the idle bar names, and whether Auto will start by itself
+    S.detected = detectStand(S.fix, clockNow(), loggerCtx());
+    S.autoStart = autoStartFor(S.logger, loggerCtx());
+  }
   const view = S.view === 'detail' ? detail(S, A, S.detailId, parts) : S.view === 'log' ? log(S, A, parts)
     : S.view === 'stats' ? statsView(S, A, parts)
+    : S.view === 'check' ? phoneCheck(S, A, parts)
     : S.view === 'settings' ? settings(S, A, parts) : glance(S, A, parts);
   root.replaceChildren(...view, ...(S.firstRun ? [firstrun(A)] : []));
   S.changed = false;
@@ -303,6 +330,10 @@ async function boot() {
   S.firstRun = !saved.seenFirstRun;
   S.device = saved.device || (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
   if (!saved.device) store.setSetting('device', S.device);
+  S.lastExport = saved.lastExport || null;
+  // Phone check: remember that Kerb has started with no signal (the offline test a driver does in aeroplane mode)
+  S.offlineBootAt = navigator.onLine ? saved.offlineBootAt || null : clockNow().toISOString();
+  if (!navigator.onLine) store.setSetting('offlineBootAt', S.offlineBootAt);
   S.events = await store.all();
   S.waits = deriveWaits(S.events);
   restoreLogger(S.events);

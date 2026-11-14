@@ -19,3 +19,14 @@ export function toCSV(waits) {
     w.versions && w.versions.bundle, w.confirmed !== false, w.creeps ?? 0, w.left_via, w.cabs_ahead_est, w.detect].map(cell).join(','));
   return [CSV_HEADER, ...rows].join('\n') + '\n';
 }
+
+/** Export reminder (decision 2026-11-14): due when finished waits not yet exported for scoring are `days` old,
+ * counted from the last export, or from the first such wait if the driver never exported. Nothing is sent. */
+export function exportDue(waits, lastExport, now, days = 7) {
+  const after = lastExport ? Date.parse(lastExport) : -Infinity;
+  const fresh = waits.filter((w) => Date.parse(w.joined_at) > after);
+  if (!fresh.length) return { due: false, days: 0, count: 0 };
+  const since = lastExport ? after : Math.min(...fresh.map((w) => Date.parse(w.joined_at)));
+  const age = Math.floor((now - since) / 86400000);
+  return { due: age >= days, days: age, count: fresh.length };
+}

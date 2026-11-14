@@ -3,6 +3,7 @@ import { h, iconButton, fmtKm, legalLine, minutesAgo } from './dom.js';
 import { bearingDeg, cardinal } from '../engine/geo.js';
 import { navUrl } from '../platform/nav.js';
 import { hhmm } from '../engine/time.js';
+import { exportDue } from '../engine/export.js';
 
 const WD = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -128,15 +129,28 @@ const seg = (label, on, onclick, test) => h('button', { class: `seg${on ? ' on' 
 function idleBar(S, A) {
   const auto = S.settings.autoLog !== false;
   const d = S.detected;
-  const status = auto ? 'Starts by itself after 2 min at a rank'
-    : d && d.detect === 'zone' ? `You're at ${standName(S, d.stand)}`
-      : d && d.detect === 'nearest' ? `Nearest rank: ${standName(S, d.stand)}` : 'No rank spotted here';
+  const seen = d && d.detect === 'zone' ? `You're at ${standName(S, d.stand)}`
+    : d && d.detect === 'nearest' ? `Nearest rank: ${standName(S, d.stand)}` : null;
+  // In Auto, promise a start by itself only when the logger's own gating says so (S.autoStart, from autoStartFor):
+  // it names the stand the stop is timed against. Otherwise name what Start would use and ask for the tap.
+  const a = S.autoStart;
+  const status = !auto ? seen || 'No rank spotted here'
+    : a && a.will ? `You're at ${standName(S, a.stand)} · starts after 2 min`
+      : seen ? `${seen} · tap Start now` : 'Starts by itself after 2 min at a rank';
   return h('footer', { class: `bar idle${auto ? '' : ' manual'}` },
     h('div', { class: 'modeswitch', role: 'radiogroup', 'aria-label': 'Rank timer', 'data-test': 'mode-switch' },
       seg('Auto', auto, () => A.setMode(true), 'mode-auto'),
       seg('Manual', !auto, () => A.setMode(false), 'mode-manual')),
     h('p', { class: 'q timerstatus', 'data-test': 'timer-status' }, status),
-    h('button', { class: auto ? 'btn' : 'btn primary big', 'data-test': 'btn-start', onclick: A.start }, auto ? 'Start now' : 'Start rank timer'));
+    h('button', { class: auto ? 'btn' : 'btn primary big', 'data-test': 'btn-start', onclick: A.start }, auto ? 'Start now' : 'Start rank timer'),
+    exportNudge(S, A));
+}
+
+/** Once a week, a quiet reminder to export the log for scoring (decision 2026-11-14). Nothing is sent by itself. */
+function exportNudge(S, A) {
+  const d = exportDue(S.waits, S.lastExport, S.now);
+  return d.due ? h('button', { class: 'nudge', 'data-test': 'export-nudge', onclick: A.openLog },
+    `Log not exported for ${d.days} days: open the Log`) : null;
 }
 export function glance(S, A, parts) {
   const from = S.fix ? [S.fix.lon, S.fix.lat] : S.ocb;

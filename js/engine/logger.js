@@ -103,6 +103,24 @@ function trackApproach(s, p) {
   if (distM(s.movePt, p) >= 15) { s.approach = bearingDeg(s.movePt, p); s.movePt = p; }
 }
 
+/** ADR 0005 gating: Auto on, the stand placed to ±auto_max_uncertainty_m, and not approached from the wrong way. */
+function canAutoJoin(dwell, stand, ctx) {
+  const L = ctx.params.logger;
+  const qb = queueBearing(headFirst(stand.line, stand.head));
+  const opposite = dwell.approach != null && qb != null && angle(dwell.approach, qb) > L.opposite_heading_deg;
+  return !!ctx.auto && stand.uncertainty_m != null && stand.uncertainty_m <= L.auto_max_uncertainty_m && !opposite;
+}
+
+/** For the idle bar (review fix 2026-11-14): the stand the current stop is timed against and whether it will start a
+ * wait by itself, from the same gating as onFixIdle (suppression after an answer or discard included). Null when
+ * Auto is off or there is no stop in a queue zone. */
+export function autoStartFor(state, ctx) {
+  if (!ctx.auto || state.mode !== 'idle' || !state.dwell) return null;
+  const stand = byId(ctx, state.dwell.stand);
+  if (!stand) return null;
+  return { stand: stand.id, will: !state.suppressedIds.includes(stand.id) && canAutoJoin(state.dwell, stand, ctx) };
+}
+
 function onFixIdle(state, s, fix, p, gap, ctx) {
   const L = ctx.params.logger;
   const good = fix.accuracy == null || fix.accuracy <= 30;
@@ -133,9 +151,7 @@ function onFixIdle(state, s, fix, p, gap, ctx) {
   if (!s.dwell || s.suppressedIds.includes(s.dwell.stand)) return { state: s, events: [] };
   const stand = byId(ctx, s.dwell.stand);
   const dur = sec(s.dwell.lastIn, s.dwell.since); // only time actually seen in the zone counts
-  const qb = queueBearing(headFirst(stand.line, stand.head));
-  const opposite = s.dwell.approach != null && qb != null && angle(s.dwell.approach, qb) > L.opposite_heading_deg;
-  const auto = ctx.auto && stand.uncertainty_m != null && stand.uncertainty_m <= L.auto_max_uncertainty_m && !opposite;
+  const auto = canAutoJoin(s.dwell, stand, ctx);
   const inNow = s.dwell.lastIn === fix.t;
   if (auto && inNow && dur >= L.auto_join_s) {
     const z = s.dwell.z;
