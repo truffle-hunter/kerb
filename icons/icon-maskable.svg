@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>Kerb</title>
+  <rect width="512" height="512" fill="#101A26"/>
+  <rect x="112" y="178" width="288" height="112" rx="36" fill="#F2EEE6"/>
+  <rect x="96" y="326" width="320" height="44" rx="10" fill="#F2B33D"/>
+  <rect x="140" y="214" width="20" height="40" rx="6" fill="#101A26"/>
+</svg>
