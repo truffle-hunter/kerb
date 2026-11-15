@@ -20,6 +20,7 @@
   --ink: #EDE7DC; --ink-dim: #BCB7AC;
   --accent: #F2B036; --accent-ink: #150E06; --go: #F2B036; --go-ink: #150E06;
   --warn: #F2C35E; --track: #36322D; --focus: #EDE7DC; --map-road: #6D6861;
+  --map-water: #171B1D; --map-green: #23261D; --map-building: #2A2723;   /* ADR 0011: quiet fills, no blue light at night */
   color-scheme: dark;
 }
 /* Day / low sun: ink on neutral paper, an ink Go. */
@@ -28,6 +29,7 @@
   --ink: #14110E; --ink-dim: #433F3A;
   --accent: #A26500; --accent-ink: #F5F3F0; --go: #14110E; --go-ink: #F5F3F0;
   --warn: #713F00; --track: #D5D2CD; --focus: #14110E; --map-road: #78746E;
+  --map-water: #CFD6D9; --map-green: #DDE1D2; --map-building: #DCD9D4;
   color-scheme: light;
 }
 * { box-sizing: border-box; }
@@ -172,6 +174,12 @@ b, strong { font-weight: var(--w-bold); }
 .sheet .check { display: flex; gap: var(--s3); align-items: center; min-height: 44px; }
 .sheet .check input { flex: none; width: 24px; height: 24px; margin: 0; accent-color: var(--accent); }
 .mapbox { display: block; width: 100%; max-width: 100%; height: auto; aspect-ratio: 1.618 / 1; border-radius: var(--radius-m); background: var(--surface); }
+.mapwrap { position: relative; }   /* ADR 0011: the map and its Area toggle */
+.mapbox { cursor: pointer; }
+.maptoggle { position: absolute; top: var(--s2); right: var(--s2); min-width: 44px; min-height: 44px; padding: 0 var(--s3); border: 0;
+  border-radius: var(--radius-s); background: var(--control); color: var(--ink); font-size: var(--t0); font-weight: var(--w-bold); }
+.maptoggle[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.sheet .mapcaption { color: var(--ink-dim); margin-top: calc(-1 * var(--s1)); }
 /* Log */
 .logrow { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--s1) var(--s3); padding: var(--s3) 0; border-bottom: 1px solid var(--line);
   font-variant-numeric: tabular-nums; align-items: baseline; }
@@ -252,8 +260,8 @@ textarea.report { font: inherit; font-size: var(--t0); line-height: var(--lh0); 
 .a-first > .overlay .card { animation: k-sheet var(--d2) var(--ease-in) var(--a-first, 0ms); }
 .a-update [data-test=update-ready] { animation: k-drop var(--d1) var(--ease-in) var(--a-update, 0ms); }
 /* Press feedback: a small give under the thumb. */
-.btn, .go, .iconbtn, .alt, .rankrow, .nudge, .shiftchip, .modeswitch .seg { transition: transform var(--d0) var(--ease-in); }
-.btn:not(:disabled):active, .go:active, .iconbtn:active, .alt:active, .rankrow:active, .nudge:active, .shiftchip:active, .modeswitch .seg:active { transform: scale(0.97); }
+.btn, .go, .iconbtn, .alt, .rankrow, .nudge, .shiftchip, .modeswitch .seg, .maptoggle { transition: transform var(--d0) var(--ease-in); }
+.btn:not(:disabled):active, .go:active, .iconbtn:active, .alt:active, .rankrow:active, .nudge:active, .shiftchip:active, .modeswitch .seg:active, .maptoggle:active { transform: scale(0.97); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

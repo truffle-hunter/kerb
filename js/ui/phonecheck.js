@@ -6,7 +6,7 @@ import { fixSummary } from '../engine/phonecheck.js';
 import * as store from '../platform/store.js';
 import { wakeSupported } from '../platform/wake.js';
 
-const KEY_FILES = ['./', 'app.css', 'js/main.js', ...['stands', 'chains', 'rules', 'graph', 'streets', 'triggers',
+const KEY_FILES = ['./', 'app.css', 'js/main.js', ...['stands', 'chains', 'rules', 'graph', 'streets', 'mapctx', 'triggers',
   'events', 'catchments', 'params', 'meta'].map((f) => `data/${f}.json`)];
 const STATE_WORD = { pass: 'OK', warn: 'Check', fail: 'Fix', todo: 'To do', info: 'Info', unsupported: 'Not supported' };
 

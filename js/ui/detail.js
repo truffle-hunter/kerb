@@ -3,6 +3,7 @@ import { h, iconButton, legalLine, fmtKm } from './dom.js';
 import { status } from '../engine/legal.js';
 import { navUrl } from '../platform/nav.js';
 import { ownHistory, historyLine, fewLine } from '../engine/history.js';
+import { caption, ariaLabel } from './mapscene.js';
 
 const TIER = { A: 'placed from an exact open-data anchor', B: 'placed from an approximate anchor', C: 'approximate: the anchor is not in open data' };
 
@@ -32,7 +33,12 @@ export function detail(S, A, id, parts) {
       ownLine(S, id),
       s.access === 'daa_permit' ? h('p', { class: S.settings.permit ? '' : 'warn', 'data-test': 'detail-permit' }, S.settings.permit
         ? 'Airport rank: you hold a daa permit (Settings).' : 'Airport rank: only for drivers with a daa permit. Turn it on in Settings if you hold one.') : null,
-      s.head ? h('canvas', { class: 'mapbox', 'data-test': 'map', 'data-stand': id, width: 640, height: 396, 'aria-label': `Map of the kerb at ${s.name}` }) : null,
+      s.head ? h('div', { class: 'mapwrap' }, // ADR 0011: Kerb view by default; Area (600 m) by the toggle or a tap on the map
+        h('canvas', { class: 'mapbox', 'data-test': 'map', 'data-stand': id, width: 640, height: 396, role: 'img', 'aria-label': ariaLabel(s),
+          onclick: A.toggleMapView }),
+        h('button', { class: 'maptoggle', type: 'button', 'data-test': 'map-toggle', 'aria-pressed': S.mapView === 'area' ? 'true' : 'false',
+          onclick: A.toggleMapView }, 'Area')) : null,
+      s.head ? h('p', { class: 'mapcaption', 'data-test': 'map-caption' }, caption(s)) : null,
       s.head ? h('a', { class: 'go', href: navUrl(S.settings.nav, s.head, s.name), target: '_blank', rel: 'noopener', 'data-test': 'detail-go' }, 'Navigate') : null,
       h('h3', {}, 'Where it is'),
       h('p', {}, placement),

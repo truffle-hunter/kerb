@@ -24,6 +24,7 @@ import { phoneCheck, gatherProbe } from './ui/phonecheck.js';
 import { ranks } from './ui/ranks.js';
 import { checkRows, reportText } from './engine/phonecheck.js';
 import { drawDetailMap } from './ui/map.js';
+import { nextHeading } from './engine/heading.js';
 import { motionFlags, renderState, continueFlags, motionStyle } from './ui/motion.js';
 import { fetchWeather } from './platform/weather.js';
 import { liveItems } from './platform/relay.js';
@@ -46,6 +47,7 @@ const S = {
   online: navigator.onLine, picker: false, openSource: null, timetable: { current: true, to: null }, eventsStale: false, updateReady: false, nearby: [], cabsAhead: null, lastReport: null, ocb: OCB, device: null,
   fixLog: [], offlineBootAt: null, lastBackup: null, persisted: null, check: null, restoreMsg: null, rankQuery: '', detailFrom: 'glance', logFilter: null, scroll: {}, renderedView: null, lastRender: null, motion: {}, // Phone check, backup (ADR 0008)
   shifts: [], shift: null, shiftAnchor: null, shiftSeenAt: null, shiftView: null, shiftDue: null, // ADR 0010
+  heading: null, mapView: 'kerb', // the rank map (ADR 0011): your heading, in memory only; Kerb or Area for the session
 };
 let worker = null, workerReady = false, workerFailed = false, loc = null, weatherAt = -Infinity, relayAt = -Infinity;
 const hooks = { afterRender: [] };
@@ -203,6 +205,7 @@ function startWorker() {
 function onFix(f) {
   const wasOk = S.loc === 'ok';
   S.fix = f;
+  S.heading = nextHeading(S.heading, f); // the map's car (ADR 0011)
   S.fixLog.push({ accuracy: f.accuracy, speed: f.speed }); // Phone check: accuracy and speed only, in memory
   if (S.fixLog.length > 60) S.fixLog.shift();
   S.loc = 'ok';
@@ -230,6 +233,7 @@ function onFix(f) {
       || JSON.stringify(a) !== JSON.stringify(S.autoStart);
   }
   if (moved || !wasOk) { recompute(); render(); } else if (loggerChanged || seenChanged) render();
+  else if (S.view === 'detail') drawDetailMap(document.getElementById('app'), S).catch(() => {}); // your car follows every fix: a blit, no render (ADR 0011)
 }
 
 function onLocError() {
@@ -284,6 +288,7 @@ const at = () => clockNow();
 const A = {
   detail(id, from = 'glance') { S.view = 'detail'; S.detailId = id; S.detailFrom = from; S.scroll[`detail:${id}`] = 0; render(); },
   back() { S.view = S.view === 'detail' && S.detailFrom === 'ranks' ? 'ranks' : 'glance'; render(); }, // detail returns where it came from
+  toggleMapView() { S.mapView = S.mapView === 'area' ? 'kerb' : 'area'; render(); }, // the rank map, for the session (ADR 0011)
   openRanks() { S.view = 'ranks'; render(); },
   openLog() { S.view = 'log'; S.logFilter = null; render(); },
   openCheckLog() { S.view = 'log'; S.logFilter = 'check'; render(); }, // the review chip: only waits to check
@@ -508,9 +513,12 @@ window.__kerb = {
     S, advance(ms) { clockAdvance(ms); onTick(); },
     detail(id) { A.detail(id); },
     awake: () => awakeHeld(),
-    fix(p) { onFix({ lon: p.lon, lat: p.lat, speed: p.speed ?? null, accuracy: p.accuracy ?? 10, t: clockNow() }); },
+    fix(p) { onFix({ lon: p.lon, lat: p.lat, speed: p.speed ?? null, accuracy: p.accuracy ?? 10, heading: p.heading ?? null, t: clockNow() }); },
   } : {}),
 };
+
+// A rotation or resize changes the map's width: repaint it at the new size without waiting for a fix (review fix)
+addEventListener('resize', () => { if (S.view === 'detail') drawDetailMap(document.getElementById('app'), S).catch(() => {}); });
 
 boot().catch((e) => {
   document.getElementById('app').textContent = `Kerb couldn't start: ${e.message}. Reload when you have signal.`;

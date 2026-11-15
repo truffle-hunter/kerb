@@ -4,7 +4,7 @@ import { dev, now } from './clock.js';
 const q = new URLSearchParams(location.search);
 export const devPos = dev && q.get('pos') ? q.get('pos').split(',').map(Number) : null;
 
-/** watch(onFix, onError, {high}) -> {setHigh(bool), stop()}; fixes are {lon, lat, speed, accuracy, t}. */
+/** watch(onFix, onError, {high}) -> {setHigh(bool), stop()}; fixes are {lon, lat, speed, accuracy, heading, t}. */
 export function watch(onFix, onError, { high = false } = {}) {
   if (devPos) {
     queueMicrotask(() => onFix({ lon: devPos[0], lat: devPos[1], speed: 0, accuracy: 5, t: now() }));
@@ -16,7 +16,7 @@ export function watch(onFix, onError, { high = false } = {}) {
   }
   let id = null, isHigh = high;
   const ok = (p) => onFix({ lon: p.coords.longitude, lat: p.coords.latitude, speed: p.coords.speed,
-    accuracy: p.coords.accuracy, t: now() });
+    accuracy: p.coords.accuracy, heading: p.coords.heading, t: now() }); // heading: the map's car (ADR 0011), memory only
   const start = () => {
     id = navigator.geolocation.watchPosition(ok, onError, { enableHighAccuracy: isHigh, maximumAge: 5000, timeout: 20000 });
   };
