@@ -90,7 +90,23 @@ export function slotPlan(s) {
     return { c: [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])], angle: bearingDeg(b, a) }; // pointing to the head
   };
   const slots = Array.from({ length: s.capacity }, (_, i) => ({ ...at((i + 0.5) * pitch), len_m: len, w_m: SLOT_W }));
-  return { slots, headIdx: 0, chevron: facingAgrees(s) !== false };
+  return { slots, headIdx: 0, chevron: facingAgrees(s) !== false, pitch_m: pitch };
+}
+
+/** A slot's size in px (ADR 0012 §3): at least 7 px wide so it never reads as a line; length to scale, but always
+ * leaving a visible 2 px gap to the next slot, also where the kerb bends. */
+export function slotDims(plan, scale) {
+  let near = plan.pitch_m; // the closest neighbouring centres: shorter than the pitch where the kerb bends
+  for (let i = 1; i < plan.slots.length; i++) near = Math.min(near, distM(plan.slots[i - 1].c, plan.slots[i].c));
+  // the 1.5 px outline is drawn inside the slot, and the gap is kept clear of it: 2 px + 1.5 px
+  return { w: Math.max(plan.slots[0].w_m * scale, 7), h: Math.min(plan.slots[0].len_m * scale, near * scale - 3.5) };
+}
+
+/** Which way your car faces when the logger says you are queued at this stand (ADR 0012): from tail to head, the way
+ * cabs face there. null where that would be a guess: the law contradicts itself, or cabs park across the kerb. */
+export function queueHeading(s) {
+  if (!s.line || s.line.length < 2 || !/parallel/i.test((s.law && s.law.position) || '') || facingAgrees(s) === false) return null;
+  return queueBearing(headFirst(s.line, s.head));
 }
 
 export const scaleBarM = (span) => (span >= 600 ? 100 : span >= 320 ? 50 : 20);
@@ -261,19 +277,31 @@ export function chevrons(px, every = 48) {
   return out;
 }
 
-/** Where to point at you from the edge when you are off the map (or hidden under `avoid`, the Area button): on the ray
- * from the centre, `inset` px inside the edge, slid along the edge out of `avoid`. null when you are in plain view. */
+/** Where to point at you from the edge when you are off the map (or hidden under something drawn over it): on the ray
+ * from the centre, `inset` px inside the edge, then slid along that inset frame to the nearest spot clear of `avoid`
+ * (a box or a list of boxes: the Area button, north, the scale bar). null when you are in plain view. */
 export function edgeMarker(W, H, you, inset = 10, avoid = null) {
+  const boxes = !avoid ? [] : Array.isArray(avoid[0]) ? avoid : [avoid];
+  const inBox = (x, y, pad) => boxes.some((b) => x >= b[0] - pad && x <= b[2] + pad && y >= b[1] - pad && y <= b[3] + pad);
   const [x, y] = you;
-  const under = avoid && x >= avoid[0] && x <= avoid[2] && y >= avoid[1] && y <= avoid[3];
-  if (x >= 0 && x <= W && y >= 0 && y <= H && !under) return null;
+  if (x >= 0 && x <= W && y >= 0 && y <= H && !inBox(x, y, 0)) return null;
   const cx = W / 2, cy = H / 2, dx = x - cx, dy = y - cy;
   const t = Math.min(dx ? (dx > 0 ? W / 2 - inset : -(W / 2 - inset)) / dx : Infinity,
     dy ? (dy > 0 ? H / 2 - inset : -(H / 2 - inset)) / dy : Infinity);
   let mx = cx + Math.min(t, 1) * dx, my = cy + Math.min(t, 1) * dy;
-  if (avoid && mx >= avoid[0] - 4 && mx <= avoid[2] + 4 && my >= avoid[1] - 4 && my <= avoid[3] + 4) {
-    // slide out of the button the short way: left along the top, or down along the right side
-    if (avoid[0] - 4 - inset >= 0 && (mx - (avoid[0] - 8)) <= (avoid[3] + 8 - my)) mx = avoid[0] - 8; else my = avoid[3] + 8;
+  if (inBox(mx, my, 4)) { // walk the inset frame both ways, 2 px at a time, to the nearest clear spot
+    const L = inset, R = W - inset, T = inset, B = H - inset, per = 2 * (R - L) + 2 * (B - T);
+    const at = (d) => { d = ((d % per) + per) % per; // distance along the frame from the top-left corner, clockwise
+      if (d < R - L) return [L + d, T]; d -= R - L;
+      if (d < B - T) return [R, T + d]; d -= B - T;
+      if (d < R - L) return [R - d, B]; d -= R - L;
+      return [L, B - d]; };
+    const start = my <= T + 0.5 ? mx - L : mx >= R - 0.5 ? (R - L) + (my - T) : my >= B - 0.5 ? 2 * (R - L) + (B - T) - (mx - L)
+      : 2 * (R - L) + 2 * (B - T) - (my - T);
+    for (let k = 2; k < per; k += 2) {
+      const p = [at(start + k), at(start - k)].find(([px, py]) => !inBox(px, py, 4));
+      if (p) { [mx, my] = p; break; }
+    }
   }
   return { x: mx, y: my, angle: Math.atan2(y - my, x - mx) };
 }

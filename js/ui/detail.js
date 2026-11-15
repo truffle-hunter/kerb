@@ -5,6 +5,33 @@ import { navUrl } from '../platform/nav.js';
 import { ownHistory, historyLine, fewLine } from '../engine/history.js';
 import { caption, ariaLabel } from './mapscene.js';
 
+const MONTHS = 'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ');
+const LICENCE = { 'CC-BY-SA-4.0': 'CC BY-SA 4.0', 'etalab-2.0': 'Licence Ouverte 2.0' };
+
+/** The street photo (ADR 0012): reviewed, bundled, credited; or one line saying there is none. A photo that can't load
+ * (offline and never cached) becomes that line. */
+const failed = new Set(); // photos that couldn't load (offline, never cached): shown as the no-photo line until back online
+if (typeof addEventListener === 'function') addEventListener('online', () => failed.clear());
+
+function photo(S, s, id) {
+  const none = () => h('p', { class: 'note', 'data-test': 'detail-nophoto' }, 'No open street photo of this kerb yet.');
+  const e = S.photos && S.photos[id];
+  if (!e || failed.has(e.f)) return none(); // a failed photo stays gone across renders: no jump on every GPS fix
+  const when = `${MONTHS[Number(e.date.slice(5, 7)) - 1]} ${e.date.slice(0, 4)}`;
+  const loose = s.uncertainty_m == null || s.uncertainty_m > 10; // a sign in view may be a neighbouring rank's
+  const line = e.verdict === 'A'
+    ? `Street photo · ${when} · from ${e.dist_m} m. ${loose ? 'Shows a rank sign or markings nearby.' : "Shows the rank's sign or markings."} Checked by an AI, not a person; the street may have changed.`
+    : `Street photo · ${when} · from ${e.dist_m} m. Shows this street; no rank sign in view. Checked by an AI, not a person.`;
+  const link = (href, text) => h('a', { href, target: '_blank', rel: 'noopener noreferrer' }, text);
+  return h('figure', { class: 'photo', 'data-test': 'detail-photo' },
+    h('img', { src: `photos/${e.f}`, width: 720, height: 445, loading: 'lazy', alt: `Street photo of ${s.street || s.name} near the rank`,
+      onerror: (ev) => { failed.add(e.f); const f = ev.target.closest('figure'); if (f) f.replaceWith(none()); } }),
+    h('figcaption', {},
+      h('p', { class: 'note', 'data-test': 'photo-line' }, line),
+      h('p', { class: 'note', 'data-test': 'photo-credit' }, 'Photo: ', link(e.src, e.by), ', ', link(e.lic_url, LICENCE[e.lic] || e.lic),
+        `, via Panoramax${e.ign ? ' (IGN)' : ''}. ${e.kind === 'crop' ? 'Cropped from a 360° photo.' : 'Resized.'}`)));
+}
+
 const TIER = { A: 'placed from an exact open-data anchor', B: 'placed from an approximate anchor', C: 'approximate: the anchor is not in open data' };
 
 /** The driver's own past waits here (ADR 0008): the summary from 3 confirmed waits, the waits themselves below. */
@@ -40,6 +67,7 @@ export function detail(S, A, id, parts) {
           onclick: A.toggleMapView }, 'Area')) : null,
       s.head ? h('p', { class: 'mapcaption', 'data-test': 'map-caption' }, caption(s)) : null,
       s.head ? h('a', { class: 'go', href: navUrl(S.settings.nav, s.head, s.name), target: '_blank', rel: 'noopener', 'data-test': 'detail-go' }, 'Navigate') : null,
+      s.head ? photo(S, s, id) : null, // ADR 0012: under the map, after Navigate so Navigate stays in reach
       h('h3', {}, 'Where it is'),
       h('p', {}, placement),
       s.tier_reason ? h('p', { class: 'note' }, `How it was placed: ${s.tier_reason}`) : null,

@@ -3,7 +3,7 @@
 // paints. Everything but you is drawn once into a cached base layer, so a GPS fix is a blit plus your car.
 import {
   decodeStreets, decodeCtx, centreOf, kerbSpan, AREA_SPAN, RATIO, projector, slotPlan, scaleBarM, ownStreet, placeLabels,
-  chevrons, edgeMarker,
+  chevrons, edgeMarker, slotDims, queueHeading,
 } from './mapscene.js';
 import { DURATION } from './motion.js';
 
@@ -112,13 +112,14 @@ function drawBase(c, stand, sc, lines, T) {
   }
   c.strokeStyle = T.accent; c.globalAlpha = 0.22; c.lineWidth = bandW; // the uncertainty band, at its true width
   path(c, line, P); c.stroke();
-  c.globalAlpha = 1; c.lineWidth = kerb ? 2 : 4;
-  path(c, line, P); c.stroke();
+  c.globalAlpha = 1;
   const planned = kerb ? slotPlan(stand) : null;
-  const plan = planned && planned.slots[0].len_m * scale >= SLOT_MIN_PX ? planned : null; // too small to read at 320 m
-  if (plan) {
+  const dims = planned ? slotDims(planned, scale) : null;
+  const plan = dims && dims.h >= SLOT_MIN_PX ? planned : null; // too small to read (the 320 m step): the line instead
+  if (plan) { // ADR 0012 §3: the slots are the kerb (no line through them) and the filled head slot is the head (no dot)
+    const { w, h } = dims;
     plan.slots.forEach((s, i) => {
-      const [x, y] = P(s.c), w = s.w_m * scale, h = s.len_m * scale;
+      const [x, y] = P(s.c);
       c.save(); c.translate(x, y); c.rotate((s.angle * Math.PI) / 180); // the slot's front points to the head
       rrect(c, -w / 2, -h / 2, w, h, Math.min(2, w / 3));
       if (i === plan.headIdx) {
@@ -128,13 +129,20 @@ function drawBase(c, stand, sc, lines, T) {
           const a = Math.min(w * 0.3, h * 0.2);
           c.beginPath(); c.moveTo(-a, a * 0.6); c.lineTo(0, -a * 0.6); c.lineTo(a, a * 0.6); c.stroke();
         }
-      } else { c.strokeStyle = T.accent; c.lineWidth = 1.5; c.stroke(); }
+      } else { // the outline inside the slot, so the gap between slots stays clear
+        c.fillStyle = T.surface; c.fill();
+        rrect(c, -w / 2 + 0.75, -h / 2 + 0.75, w - 1.5, h - 1.5, Math.max(0, Math.min(2, w / 3) - 0.75));
+        c.strokeStyle = T.accent; c.lineWidth = 1.5; c.stroke();
+      }
       c.restore();
     });
+  } else {
+    c.lineWidth = kerb ? 2 : 4;
+    path(c, line, P); c.stroke();
+    const [hx, hy] = P(stand.head); // the head: an ink dot in a ring of ground
+    c.fillStyle = T.surface; c.beginPath(); c.arc(hx, hy, 7, 0, 2 * Math.PI); c.fill();
+    c.fillStyle = T.ink; c.beginPath(); c.arc(hx, hy, 5, 0, 2 * Math.PI); c.fill();
   }
-  const [hx, hy] = P(stand.head); // the head: an ink dot in a ring of ground
-  c.fillStyle = T.surface; c.beginPath(); c.arc(hx, hy, 7, 0, 2 * Math.PI); c.fill();
-  c.fillStyle = T.ink; c.beginPath(); c.arc(hx, hy, 5, 0, 2 * Math.PI); c.fill();
   c.font = FONT; c.fillStyle = T.inkDim; c.textAlign = 'left'; c.textBaseline = 'alphabetic'; // north and the scale
   c.fillText('N ↑', 12, 22);
   const y0 = H - 14;
@@ -144,17 +152,37 @@ function drawBase(c, stand, sc, lines, T) {
   return { slots: plan ? plan.slots.length : 0, labels: labels.map((l) => l.text) };
 }
 
-/** You: a car when there is a heading, a ring when there isn't, a chevron at the edge when you are off the map. */
+/** The taxi badge (ADR 0012): an upright front-view taxi in a disc. It is symmetric and never turns, so it claims no
+ * direction; it shows where you are when Kerb doesn't know which way you face. */
+function badge(c, x, y, r, T) {
+  const k = r / 13;
+  c.save(); c.translate(x, y); c.scale(k, k);
+  c.beginPath(); c.arc(0, 0, 13, 0, 2 * Math.PI);
+  c.strokeStyle = T.surface; c.lineWidth = 4 / k; c.stroke(); // a 2 px ground outline
+  c.fillStyle = T.ink; c.fill();
+  c.fillStyle = T.surface;
+  rrect(c, -5, -6, 10, 5, 1.5); c.fill(); // cabin
+  rrect(c, -7, -1.5, 14, 7, 2); c.fill(); // body
+  c.fillStyle = T.ink;
+  c.beginPath(); c.arc(-4.5, 2, 1.3, 0, 2 * Math.PI); c.arc(4.5, 2, 1.3, 0, 2 * Math.PI); c.fill(); // headlights
+  c.fillStyle = T.accent; c.fillRect(-3, -9.5, 6, 3); // the roof sign
+  c.restore();
+}
+
+/** You: your car turned to your heading; the taxi badge when there is no heading; the badge at the edge, with a pointer,
+ * when you are off the map. Nothing without a fix. */
 function drawYou(c, sc, fix, heading, T) {
   if (!fix) return { you: 'none', xy: null };
   const [x, y] = sc.P([fix.lon, fix.lat]);
-  const edge = edgeMarker(sc.W, sc.H, [x, y], 10, [sc.W - 72, 0, sc.W, 56]); // never under the Area button (review fix)
+  const edge = edgeMarker(sc.W, sc.H, [x, y], 16, [[sc.W - 84, 0, sc.W, 68], [0, 0, 56, 42], // the Area button, north,
+    [0, sc.H - 40, 12 + scaleBarM(sc.span) * sc.scale + 52, sc.H]]); // and the scale bar
   c.lineJoin = 'round';
   if (edge) {
-    c.save(); c.translate(edge.x, edge.y); c.rotate(edge.angle);
-    c.beginPath(); c.moveTo(6, 0); c.lineTo(-6, -6); c.lineTo(-3, 0); c.lineTo(-6, 6); c.closePath();
+    c.save(); c.translate(edge.x, edge.y); c.rotate(edge.angle); // only the pointer turns
+    c.beginPath(); c.moveTo(17, 0); c.lineTo(10, -4.5); c.lineTo(10, 4.5); c.closePath();
     c.strokeStyle = T.surface; c.lineWidth = 2; c.stroke(); c.fillStyle = T.ink; c.fill();
     c.restore();
+    badge(c, edge.x, edge.y, 11, T);
     return { you: 'edge', xy: [edge.x, edge.y] };
   }
   if (fix.accuracy > ACCURACY_SHOWN_M) {
@@ -162,21 +190,16 @@ function drawYou(c, sc, fix, heading, T) {
     c.beginPath(); c.arc(x, y, fix.accuracy * sc.scale, 0, 2 * Math.PI); c.fill();
     c.globalAlpha = 1;
   }
-  if (heading == null) {
-    c.strokeStyle = T.surface; c.lineWidth = 6; c.beginPath(); c.arc(x, y, 8, 0, 2 * Math.PI); c.stroke();
-    c.strokeStyle = T.ink; c.lineWidth = 3; c.beginPath(); c.arc(x, y, 8, 0, 2 * Math.PI); c.stroke();
-    c.fillStyle = T.ink; c.beginPath(); c.arc(x, y, 2.5, 0, 2 * Math.PI); c.fill();
-    return { you: 'ring', xy: [x, y] };
-  }
+  if (heading == null) { badge(c, x, y, 13, T); return { you: 'badge', xy: [x, y] }; }
   c.save(); c.translate(x, y); c.rotate((heading * Math.PI) / 180); // your car: front up, then turned to your heading
-  rrect(c, -7, -13, 14, 26, 4.5);
+  rrect(c, -8, -15, 16, 30, 5);
   c.strokeStyle = T.surface; c.lineWidth = 4; c.stroke(); // a 2 px ground outline outside the body
   c.fillStyle = T.ink; c.fill();
   const quad = (q) => { c.beginPath(); q.forEach(([a, b], i) => (i ? c.lineTo(a, b) : c.moveTo(a, b))); c.closePath(); c.fill(); };
   c.fillStyle = T.surface;
-  quad([[-5.5, -7.5], [5.5, -7.5], [4.5, -4], [-4.5, -4]]); // windscreen, at the front
-  quad([[-4.5, 7], [4.5, 7], [5.5, 9.5], [-5.5, 9.5]]); // rear window
-  c.fillStyle = T.accent; c.fillRect(-5, -1, 10, 3); // the roof sign: your one amber (ADR 0009)
+  quad([[-6.3, -8.7], [6.3, -8.7], [5.2, -4.6], [-5.2, -4.6]]); // windscreen, at the front
+  quad([[-5.2, 8.1], [5.2, 8.1], [6.3, 11], [-6.3, 11]]); // rear window
+  c.fillStyle = T.accent; c.fillRect(-5, -1.5, 10, 4); // the roof sign: your one amber (ADR 0009)
   c.restore();
   return { you: 'car', xy: [x, y] };
 }
@@ -247,8 +270,12 @@ function paint(canvas, S, lines, my) {
     c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = 1;
     c.drawImage(b.canvas, 0, 0);
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const y = drawYou(c, sc, S.fix, S.heading ? S.heading.heading : null, T);
+    const gps = S.heading ? S.heading.heading : null;
+    const queued = gps == null && S.logger && S.logger.mode === 'waiting' && S.logger.stand === stand.id && !S.logger.departAt
+      ? queueHeading(stand) : null; // queued here: you face the way cabs face at this rank (ADR 0012)
+    const y = drawYou(c, sc, S.fix, gps != null ? gps : queued, T);
     d.you = y.you;
+    if (y.you === 'car') d.headingSrc = gps != null ? 'gps' : 'rank'; else delete d.headingSrc;
     if (y.xy) d.youXy = `${y.xy[0].toFixed(1)},${y.xy[1].toFixed(1)}`; else delete d.youXy;
     delete d.zooming;
     d.drawn = '1';

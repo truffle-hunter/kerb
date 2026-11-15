@@ -180,6 +180,10 @@ b, strong { font-weight: var(--w-bold); }
   border-radius: var(--radius-s); background: var(--control); color: var(--ink); font-size: var(--t0); font-weight: var(--w-bold); }
 .maptoggle[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
 .sheet .mapcaption { color: var(--ink-dim); margin-top: calc(-1 * var(--s1)); }
+.photo { margin: 0; display: grid; gap: var(--s2); }   /* ADR 0012: the reviewed street photo */
+.photo img { display: block; width: 100%; height: auto; aspect-ratio: 720 / 445; border-radius: var(--radius-m); background: var(--surface); }
+.photo figcaption { display: grid; gap: var(--s1); }
+.photo a { color: inherit; display: inline-block; min-height: 44px; line-height: 44px; margin: -13px 0; }   /* a 44 px target in a 16 px line */
 /* Log */
 .logrow { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--s1) var(--s3); padding: var(--s3) 0; border-bottom: 1px solid var(--line);
   font-variant-numeric: tabular-nums; align-items: baseline; }

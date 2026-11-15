@@ -458,6 +458,8 @@ async function boot() {
   S.data = { stands: d.stands.stands, chains: d.chains.chains, rules: d.rules.rules, triggers: d.triggers, events: d.events,
     catchments: d.catchments, params: d.params, meta: d.meta };
   S.byId = Object.fromEntries(S.data.stands.map((s) => [s.id, s]));
+  // ADR 0012: the reviewed street photos (a committed asset beside the app, precached); none if the file can't load
+  S.photos = await fetch('photos/photos.json').then((r) => (r.ok ? r.json() : {})).then((j) => j.photos || {}).catch(() => ({}));
   S.storageOk = await store.open();
   const saved = await store.settings();
   for (const k of Object.keys(S.settings)) if (saved[k] !== undefined) S.settings[k] = saved[k];
@@ -501,6 +503,9 @@ async function boot() {
       seen = true;
     });
     navigator.serviceWorker.register('sw.js').catch(() => {}); // offline after first load
+    // ADR 0012: ask the worker to keep the photos for offline use, in their own cache, without holding up anything
+    const urls = Object.values(S.photos).map((e) => `photos/${e.f}`);
+    if (urls.length) navigator.serviceWorker.ready.then((reg) => reg.active && reg.active.postMessage({ type: 'photos', urls })).catch(() => {});
   }
 }
 
