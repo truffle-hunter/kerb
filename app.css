@@ -269,3 +269,27 @@ textarea.report { font: inherit; font-size: var(--t0); line-height: var(--lh0); 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* "Why this rank?" (ADR 0013): the reason line is the way in, a quiet underlined "Why?" at its end; the sheet reuses the
+   first-run bottom sheet, capped at 85% so a strip of backdrop always stays to tap. */
+.whyopen { all: unset; box-sizing: border-box; display: block; width: 100%; min-height: var(--h-quiet); cursor: pointer; text-align: left;
+  font-size: var(--t05); line-height: var(--lh1); color: var(--ink-dim); border-radius: var(--radius-s); }
+.whyopen:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.whycue { color: var(--ink-dim); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 4px; white-space: nowrap; }
+.overlay.why .card { max-height: 85vh; max-height: 85dvh; }
+.whybody { display: grid; gap: var(--s2); align-content: start; overflow-y: auto; overscroll-behavior: contain; padding-bottom: var(--s5);
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - var(--s5)), transparent);
+  mask-image: linear-gradient(to bottom, black calc(100% - var(--s5)), transparent); }
+.whybody p, .whybody li { margin: 0; max-width: 68ch; font-size: var(--t05); line-height: var(--lh0); }
+.whybody .note { font-size: var(--t0); }
+.whybody h3 { font-size: var(--t05); line-height: var(--lh05); margin: var(--s3) 0 0; }
+.whybody .btn.quiet { justify-self: start; }
+.whyrows { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s2); }
+.whyrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s1) var(--s3); align-items: baseline; }
+.whybody .whyrow, .whybody .whyrow .note { line-height: var(--lh05); }  /* ten rows in the busiest hour stay near two screens */
+.whyrow .whylabel { overflow-wrap: anywhere; }
+.whyrow .whypct { font-weight: var(--w-bold); font-variant-numeric: tabular-nums; }
+.whyrow .bandbar, .whyrow .note { grid-column: 1 / -1; }
+.whyrow .bandbar { display: block; }
+.a-why > .overlay.why { animation: k-fade var(--d1) var(--ease-in) var(--a-why, 0ms); }
+.a-why > .overlay.why .card { animation: k-sheet var(--d2) var(--ease-in) var(--a-why, 0ms); }

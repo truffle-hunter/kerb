@@ -72,7 +72,12 @@ function recBlock(S, A, from) {
       h('p', { class: 'big', 'data-test': 'rec-km' }, `${fmtKm(top.km, top.approx)} ${dir}`.trim()),
       h('a', { class: 'go', 'data-test': 'btn-go', href: navUrl(S.settings.nav, s.head, s.name), target: '_blank', rel: 'noopener' }, 'Go')),
     h('p', { class: 'big dim', 'data-test': 'rec-legal' }, legalLine(top.status)),
-    h('p', { class: 'big dim', 'data-test': 'rec-reason' }, top.demand.reason),
+    // ADR 0013: the reason line is the discreet way into "Why this rank?" (not while the first-run sheet is up)
+    S.firstRun ? h('p', { class: 'big dim', 'data-test': 'rec-reason' }, top.demand.reason)
+      : h('button', { class: 'whyopen', type: 'button', 'data-test': 'why-open', 'aria-label': `Why this rank? ${top.demand.reason}`,
+        'aria-haspopup': 'dialog', onclick: () => A.openWhy() },
+      h('span', { class: 'big dim', 'data-test': 'rec-reason' }, top.demand.reason), ' · ',
+      h('span', { class: 'whycue', 'data-test': 'why-cue' }, 'Why?')),
     caution(S, s.id),
     hist(S, s.id, 'big hist', 'rec-history'),
     rep ? h('p', { class: 'report', 'data-test': 'rec-report' }, rep) : null);

@@ -16,6 +16,7 @@ import { parseBackup, mergeEvents, closeDanglingWaits, closeDanglingShifts, hasO
 import { sunElevation } from './ui/dom.js';
 import { glance } from './ui/glance.js';
 import { detail } from './ui/detail.js';
+import { why } from './ui/why.js';
 import { log } from './ui/log.js';
 import { settings } from './ui/settings.js';
 import { firstrun } from './ui/firstrun.js';
@@ -48,11 +49,20 @@ const S = {
   fixLog: [], offlineBootAt: null, lastBackup: null, persisted: null, check: null, restoreMsg: null, rankQuery: '', detailFrom: 'glance', logFilter: null, scroll: {}, renderedView: null, lastRender: null, motion: {}, // Phone check, backup (ADR 0008)
   shifts: [], shift: null, shiftAnchor: null, shiftSeenAt: null, shiftView: null, shiftDue: null, // ADR 0010
   heading: null, mapView: 'kerb', // the rank map (ADR 0011): your heading, in memory only; Kerb or Area for the session
+  why: null, renderedWhy: null, // "Why this rank?" (ADR 0013): {id} of the stand the open sheet explains
 };
 let worker = null, workerReady = false, workerFailed = false, loc = null, weatherAt = -Infinity, relayAt = -Infinity;
 const hooks = { afterRender: [] };
 
 const from = () => (S.fix ? [S.fix.lon, S.fix.lat] : OCB);
+const focusTest = (t) => { const el = document.querySelector(`[data-test="${t}"]`); if (el) el.focus(); return !!el; };
+
+/** Closes "Why this rank?" (ADR 0013) and gives focus back to the line that opened it. */
+function shutWhy() {
+  S.why = null;
+  render();
+  if (!focusTest('why-open')) focusTest('rec-name');
+}
 
 function fallbackKm(p) {
   const km = {};
@@ -408,6 +418,21 @@ const A = {
   },
   async exportCSV() { await exportFile(`kerb-waits-${dublinParts(at()).date}.csv`, toCSV(S.waits), 'text/csv'); },
   firstRunOk() { S.firstRun = false; store.setSetting('seenFirstRun', true); render(); },
+  // ADR 0013: "Why this rank?" opens on the top stand (or the stand the open sheet offers); the phone's Back closes it
+  openWhy(id) {
+    const target = id || (S.recs[0] && S.recs[0].stand.id);
+    if (!target) return;
+    if (!S.why) history.pushState({ kerbWhy: 1 }, '');
+    S.why = { id: target };
+    S.scroll[`why:${target}`] = 0;
+    render();
+    if (!focusTest('why-close')) focusTest('why-open');
+  },
+  closeWhy() {
+    if (!S.why) return;
+    if (history.state && history.state.kerbWhy) history.back(); // its popstate finds the sheet already shut
+    shutWhy();
+  },
 };
 
 const viewKey = () => (S.view === 'detail' ? `detail:${S.detailId}` : S.view);
@@ -431,6 +456,19 @@ function render() {
     : S.view === 'check' ? phoneCheck(S, A, parts)
     : S.view === 'ranks' ? ranks(S, A, parts)
     : S.view === 'settings' ? settings(S, A, parts) : glance(S, A, parts);
+  // ADR 0013: the open sheet sits over the glance, which takes no taps or focus; its scroll survives the rebuild
+  let sheet = null;
+  if (S.why && S.view === 'glance' && !S.firstRun) {
+    // a sheet that can't be built (e.g. data without params.explain) shuts and reports itself; the glance keeps updating
+    try { sheet = why(S, A, from()); } catch (e) {
+      S.why = null;
+      if (history.state && history.state.kerbWhy) history.back();
+      setTimeout(() => { throw e; });
+    }
+  }
+  if (sheet) for (const el of view) el.inert = true;
+  const whyBody = root.querySelector('[data-test=why-body]');
+  if (whyBody && S.renderedWhy) S.scroll[`why:${S.renderedWhy}`] = whyBody.scrollTop;
   // ADR 0009: animate only what changed since the last render; a render mid-animation continues it from where it was
   const seen = renderState(S, viewKey()), t = performance.now();
   S.motion = continueFlags(S.motion, motionFlags(S.lastRender, seen), t);
@@ -438,8 +476,10 @@ function render() {
   root.className = m.className;
   root.style.cssText = m.style;
   S.lastRender = seen;
-  root.replaceChildren(...view, ...(S.firstRun ? [firstrun(A)] : []));
+  root.replaceChildren(...view, ...(S.firstRun ? [firstrun(A)] : []), ...(sheet ? [sheet] : []));
   S.renderedView = viewKey();
+  S.renderedWhy = sheet ? S.why.id : null;
+  if (sheet) { const b = sheet.querySelector('[data-test=why-body]'); b.scrollTop = S.scroll[`why:${S.why.id}`] || 0; }
   const after = root.querySelector(':scope > main');
   if (after && S.scroll[S.renderedView]) after.scrollTop = S.scroll[S.renderedView];
   S.changed = false;
@@ -486,6 +526,10 @@ async function boot() {
   addEventListener('pageshow', (e) => { if (e.persisted) onResume(); });
   addEventListener('online', () => { S.online = true; render(); });
   addEventListener('offline', () => { S.online = false; render(); });
+  // ADR 0013: the phone's Back and Escape close "Why this rank?"; a sheet left open by a reload leaves no live entry
+  if (history.state && history.state.kerbWhy) history.replaceState(null, '');
+  addEventListener('popstate', () => { if (S.why) shutWhy(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.why) { e.preventDefault(); A.closeWhy(); } });
   applyAwake();
   recompute();
   render();

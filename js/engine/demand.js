@@ -47,26 +47,35 @@ export function score(stand, now, ctx, trig) {
           : 'Station beside the rank';
   }
   const parts = [{ label: catchLabel, value: base * catchment }];
+  // ADR 0013: the same numbers, split for "Why this rank?" (additive: score, level, reason and parts are unchanged)
+  const detail = { when: timeWords(now, P), base, night, time: base * P.catch_floor,
+    catch: Object.fromEntries(Object.entries(comp).map(([k, v]) => [k, (base * v) / P.catch_norm])),
+    counts: { pubs: c.pubs, clubs: c.clubs, rooms: c.rooms, stations: c.stations }, triggers: [], rain: null };
   const pubShare = Math.min(1, (c.idx_pub + c.idx_club) / P.catch_norm);
   let rain = 0;
   for (const t of trig || []) {
     if (t.kind === 'rain') { rain = P.kind_weight.rain; parts.push({ label: t.label, value: 0 }); continue; }
     const k = kernel((now - t.t) / MIN, P);
     if (!k) continue;
+    const near = t.place && stand.head ? distM(stand.head, t.place) : null;
     const prox = t.kind === 'closing' || t.kind === 'late_closing' ? pubShare
-      : t.place && stand.head ? Math.max(0, 1 - distM(stand.head, t.place) / (t.kind === 'event' ? P.event_proximity_m : P.proximity_m)) : 0;
+      : near !== null ? Math.max(0, 1 - near / (t.kind === 'event' ? P.event_proximity_m : P.proximity_m)) : 0;
     const v = (P.kind_weight[t.kind] ?? 0) * t.weight * prox * k;
-    if (v > 0) parts.push({ label: t.label, value: v });
+    if (v > 0) {
+      parts.push({ label: t.label, value: v });
+      detail.triggers.push({ kind: t.kind, label: t.label, t: t.t, distM: t.kind === 'closing' || t.kind === 'late_closing' ? null : near, value: v });
+    }
   }
   let total = parts.reduce((s, x) => s + x.value, 0);
   if (rain) {
     const rainPart = parts.find((x) => x.value === 0 && /^Rain/.test(x.label));
     rainPart.value = total * rain;
+    detail.rain = { label: rainPart.label, value: rainPart.value };
     total *= 1 + rain;
   }
   const level = total >= P.high ? 'high' : total >= P.medium ? 'medium' : 'low';
   const reason = parts.reduce((a, b) => (b.value > a.value ? b : a)).label;
-  return { score: total, level, reason, parts };
+  return { score: total, level, reason, parts, detail };
 }
 
 /** Top stands to head for: recommendable, legally usable now, permit-gated, ranked by demand ÷ (1 + km / k). */
