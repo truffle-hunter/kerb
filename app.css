@@ -306,7 +306,13 @@ textarea.report { font: inherit; font-size: var(--t0); line-height: var(--lh0); 
 .bar.shiftbar > .q.tocome { grid-column: 1 / -1; font-size: var(--t0); line-height: var(--lh0); color: var(--ink-dim); }
 .tcitem { display: inline-block; max-width: 100%; }
 .tnrows, .tnweeks { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s2); }
-.tnrow { display: grid; grid-template-columns: 6.4rem 16px minmax(0, 1fr); column-gap: var(--s3); align-items: baseline; }
+/* ADR 0016: each row is a button into its reasons, the whole row a 44 px target, ending in a quiet underlined "Why?" */
+.tnrow { display: block; }
+.tnopen { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 6.4rem 16px minmax(0, 1fr); column-gap: var(--s3);
+  align-items: baseline; align-content: center; width: 100%; min-height: var(--h-quiet); cursor: pointer; text-align: left; color: var(--ink);
+  border-radius: var(--radius-s); }
+.tnopen:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.tncue { font-size: var(--t0); }
 .tnbody .tnrow, .tnbody .tnrow .note { line-height: var(--lh05); }
 .tntime { font-variant-numeric: tabular-nums; font-size: var(--t0); color: var(--ink-dim); white-space: nowrap; }
 .tntitle { overflow-wrap: anywhere; }
@@ -328,3 +334,9 @@ textarea.report { font: inherit; font-size: var(--t0); line-height: var(--lh0); 
 .tnday { font-weight: var(--w-bold); }
 .tnwhat { overflow-wrap: anywhere; }
 /* The sheet is also .overlay.why, so it opens with the Why sheet's motion (no new flag). */
+/* ADR 0016: a row's detail arrives as a fresh card in the same place (a-drill); going back to the list doesn't move. */
+.a-drill > .overlay.why .card { animation: k-sheet var(--d2) var(--ease-in) var(--a-drill, 0ms); }
+.tnsec { display: grid; gap: var(--s1); }
+.tndetail .tnsec p { overflow-wrap: anywhere; }
+.tndetail .tnline { display: grid; grid-template-columns: 3.2rem minmax(0, 1fr); column-gap: var(--s3); align-items: baseline; }
+.tndetail .tnwhere { display: block; }

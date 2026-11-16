@@ -11,7 +11,8 @@ export function parseBackup(text) {
   }
   const opens = Array.isArray(data.plan_opens) ? data.plan_opens : []; // ADR 0015; older backups have none
   return { events: data.events, device: typeof data.device === 'string' ? data.device : null,
-    planOpens: opens.filter((o) => o && typeof o.t === 'string' && !Number.isNaN(Date.parse(o.t))).map((o) => ({ t: o.t, on_shift: !!o.on_shift })),
+    planOpens: opens.filter((o) => o && typeof o.t === 'string' && !Number.isNaN(Date.parse(o.t)))
+      .map((o) => (typeof o.why === 'string' ? { t: o.t, on_shift: !!o.on_shift, why: o.why } : { t: o.t, on_shift: !!o.on_shift })), // ADR 0016: a row's detail
     exportedAt: data.meta && typeof data.meta.exported_at === 'string' ? data.meta.exported_at : null };
 }
 
@@ -102,6 +103,6 @@ export const hasOwnLog = (events) => events.some((e) => !['shift_start', 'shift_
 /** The Tonight openings of two logs merged by time, in order, the most recent `cap` kept (ADR 0015). Idempotent. */
 export function mergeOpens(local, incoming, cap = 2000) {
   const byT = new Map();
-  for (const o of [...(local || []), ...(incoming || [])]) if (!byT.has(o.t)) byT.set(o.t, o);
+  for (const o of [...(local || []), ...(incoming || [])]) { const k = `${o.t}|${o.why || ''}`; if (!byT.has(k)) byT.set(k, o); } // ADR 0016: a detail opening can share t
   return [...byT.values()].sort((a, b) => Date.parse(a.t) - Date.parse(b.t)).slice(-cap);
 }

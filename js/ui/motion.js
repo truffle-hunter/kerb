@@ -15,6 +15,7 @@ export function renderState(S, view) {
     recChanged: !!S.changed,
     mapView: S.mapView || 'kerb', // the rank map's Kerb / Area view (ADR 0011)
     why: !!S.why || !!S.tonight, // a sheet is open: "Why this rank?" (ADR 0013) or "Tonight" (ADR 0015), which opens the same way
+    drill: S.tonight && S.tonight.row ? S.tonight.row : null, // ADR 0016: the Tonight row whose detail the card shows
   };
 }
 
@@ -24,7 +25,8 @@ export function renderState(S, view) {
  * a-bar (the logger bar changed state, glance to glance), a-mode (Auto / Manual moved on the glance),
  * a-first (the first-run sheet appears), a-update (the update chip appears),
  * a-map (the driver switches the rank map between Kerb and Area on the same rank; ADR 0011),
- * a-why (the "Why this rank?" sheet opens; ADR 0013; no exit animation).
+ * a-why (the "Why this rank?" sheet opens; ADR 0013; no exit animation),
+ * a-drill (a Tonight row's detail replaces the list in the card; ADR 0016; none on the way back).
  */
 export function motionFlags(prev, cur) {
   if (!prev) return cur.firstRun ? ['a-first'] : [];
@@ -41,11 +43,12 @@ export function motionFlags(prev, cur) {
   if (cur.firstRun && !prev.firstRun) flags.push('a-first');
   if (cur.updateReady && !prev.updateReady) flags.push('a-update');
   if (cur.why && !prev.why) flags.push('a-why');
+  if (cur.drill && cur.drill !== prev.drill) flags.push('a-drill'); // ADR 0016: the card rises again as the row's detail; none on return
   return flags;
 }
 
 // How long each flag's animation runs, in ms (the CSS tokens: d0 120, d1 194, d2 314; the stones add two 60 ms staggers).
-export const DURATION = { 'a-view': 194, 'a-home': 120, 'a-rec': 194, 'a-level': 314, 'a-bar': 194, 'a-mode': 194, 'a-first': 314, 'a-update': 194, 'a-map': 314, 'a-why': 314 };
+export const DURATION = { 'a-view': 194, 'a-home': 120, 'a-rec': 194, 'a-level': 314, 'a-bar': 194, 'a-mode': 194, 'a-first': 314, 'a-update': 194, 'a-map': 314, 'a-why': 314, 'a-drill': 314 };
 const RIVALS = [['a-view', 'a-home']]; // one screen arrives at a time
 
 /**

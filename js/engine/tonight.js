@@ -36,7 +36,7 @@ export const nightItems = (ctx, from, to) =>
   triggersAround(from, ctx, 0, (to - from) / MIN).filter((x) => !NOT_IN_NIGHT.has(x.kind));
 
 /** The key his waits record for an item (spec §8): let-outs by venue, closing citywide, timetables by kind and place. */
-function itemKey(x) {
+export function itemKey(x) {
   if (x.kind === 'event') return `event:${x.venue}`;
   if (CITYWIDE.has(x.kind) || !x.place) return x.kind;
   return `${x.kind}@${x.place[0].toFixed(3)},${x.place[1].toFixed(3)}`;
@@ -51,7 +51,7 @@ export function keyValue(key, params) {
 
 const itemValue = (x, params) => (params.demand.kind_weight[x.kind] ?? 0) * x.weight;
 const dotOf = (v, dots) => (v >= dots[2] ? 'large' : v >= dots[1] ? 'medium' : v >= dots[0] ? 'small' : 'ring');
-const stripClock = (label, t) => label.replace(new RegExp(`\\s*~?${hhmm(t)}`), '').replace(/\s+/g, ' ').trim();
+export const stripClock = (label, t) => label.replace(new RegExp(`\\s*~?${hhmm(t)}`), '').replace(/\s+/g, ' ').trim();
 
 function groupOf(x, i) {
   if (x.kind === 'last_rail' || x.kind === 'last_luas') return 'last';
@@ -73,7 +73,7 @@ function makeRow(items, group, params) {
   else { title = stripClock(first.label, first.t); name = first.kind === 'event' ? title.replace(/ lets out$/, '') : title; }
   const clock = `${approx ? '~' : ''}${hhmm(first.t)}`;
   const recordKeys = keys.filter((k) => keyValue(k, params) >= params.plan.dots[0]);
-  return { title, from: first.t, to: last.t, approx, n, value, dot: dotOf(value, params.plan.dots), kind: first.kind, keys,
+  return { title, from: first.t, to: last.t, approx, n, value, dot: dotOf(value, params.plan.dots), kind: first.kind, keys, group,
     recordKeys: value >= params.plan.dots[0] ? recordKeys : [], short: `${clock} ${name}`,
     card: n > 1 ? `${name} from ${hhmm(first.t)}` : `${title} ${clock}`, items };
 }
@@ -151,6 +151,8 @@ const stripText = (sp, capital) => sp.map((s, i) => {
 }).join(' · ');
 
 const fresh = (forecast, now, P) => !!forecast && now - forecast.fetched <= P.forecast_max_age_h * HOUR;
+/** Is the cached forecast young enough to show (ADR 0016's detail reads its rain the same way as the band). */
+export const forecastFresh = fresh;
 const wetStep = (s, mm) => s.mm >= mm * ((s.to - s.from) / HOUR); // the same rate, 0.5 mm an hour, at any step length
 
 /** The rain band (spec §4): hourly steps only, merged; the clock in brackets is the forecast's issue time. */
@@ -290,6 +292,24 @@ function shownRows(ctx, w, now) {
   return waveRows(nightItems(ctx, new Date(w.from.getTime() - tail), w.to), ctx);
 }
 
+/** A row's identity across the minute rebuild (ADR 0016 J3): its group, or its item's key when it stands alone, and the
+ * time of its last item. Tails are stable while the head drops off, so the key holds until the row is gone. */
+export const rowKey = (row) => `${row.group.startsWith('one:') ? itemKey(row.items[0]) : row.group}|${row.to.getTime()}`;
+/** A quiet stretch's identity: the end of the gap. */
+export const quietKey = (gap) => `quiet|${gap.to.getTime()}`;
+/** The span Kerb counts a row over: first item - kernel lead to last item + kernel end, in ms (spec §3). */
+export const rowWindow = (row, params) => [row.from.getTime() - params.demand.kernel_lead_min * MIN, row.to.getTime() + params.demand.kernel_end_min * MIN];
+
+/** The night's rows, uncapped, and its quiet stretches: what the list and every row's detail are built from (ADR 0016),
+ * so the two always agree. No quiet stretch on a stale bundle (plan review I4). */
+export function nightRows(ctx, now) {
+  const params = ctx.params, w = nightWindow(now, params.plan);
+  const all = shownRows(ctx, w, now);
+  const timetable = timetableStatus(now, ctx);
+  const loaded = timetable.current && !!ctx.triggers && w.date <= ctx.triggers.to;
+  return { window: w, all, timetable, loaded, gaps: loaded ? quietGaps(all, w.from, w.to, params) : [] };
+}
+
 function cardText(all, rain) {
   const lets = all.filter((r) => r.kind === 'event').length, top = strongest(all)[0];
   return (lets ? `Tonight: ${plural(lets, 'let-out')}` : top ? `Tonight: ${top.card}` : 'Tonight: nothing scheduled')
@@ -305,14 +325,11 @@ export function tonightCard(ctx, now, forecast) {
 /** Everything the sheet shows, as plain data (the UI maps it onto nodes and does no arithmetic of its own). */
 export function tonightModel({ ctx, now, forecast, waits, shifts }) {
   const params = ctx.params, P = params.plan;
-  const w = nightWindow(now, P);
-  const all = shownRows(ctx, w, now);
-  const timetable = timetableStatus(now, ctx);
-  const loaded = timetable.current && !!ctx.triggers && w.date <= ctx.triggers.to; // plan review I4: no false quiet
+  const { window: w, all, timetable, gaps } = nightRows(ctx, now);
   const rows = capRows(all, P.max_rows);
   const entries = [
-    ...rows.map((row) => ({ type: 'wave', row, record: recordLine(rowRecord(waits, row, now)) })),
-    ...(loaded ? quietGaps(all, w.from, w.to, params) : []).map((g) => ({ type: 'quiet', from: g.from, to: g.to })),
+    ...rows.map((row) => ({ type: 'wave', row, record: recordLine(rowRecord(waits, row, now)), key: rowKey(row) })),
+    ...gaps.map((g) => ({ type: 'quiet', from: g.from, to: g.to, key: quietKey(g) })),
   ].sort((a, b) => (a.type === 'quiet' ? a.from : a.row.from) - (b.type === 'quiet' ? b.from : b.row.from));
   const rain = rainBand(forecast, w, now, params);
   const card = cardText(all, rain);

@@ -91,6 +91,16 @@ function shutTonight() {
   if (!(opener && focusTest(opener))) focusTest('rec-name');
 }
 
+/** Steps a Tonight row's detail back to the list (ADR 0016) and gives focus back to that row, or to Close if it's gone. */
+function shutTonightRow() {
+  const key = S.tonight && S.tonight.row;
+  if (!key) return;
+  S.tonight = { ...S.tonight, row: null, rowTitle: null };
+  render();
+  const el = document.querySelector(`[data-test="tonight-row-open"][data-key="${CSS.escape(key)}"]`);
+  if (el) el.focus(); else focusTest('tonight-close');
+}
+
 function fallbackKm(p) {
   const km = {};
   for (const s of S.data.stands) if (s.recommendable) km[s.id] = { km: (distM(p, s.head) * 1.3) / 1000, approx: true };
@@ -503,7 +513,7 @@ const A = {
     if (backPending) { reopen = () => A.openTonight(from); return; }
     if (S.why) { S.why = null; history.replaceState({ kerbTonight: 1 }, ''); }
     else if (!S.tonight) history.pushState({ kerbTonight: 1 }, '');
-    S.tonight = { from };
+    S.tonight = { from, row: null, rowTitle: null };
     S.scroll.tonight = 0;
     // each opening is kept for the kill criterion (settings, not the event log: shifts and waits read every event)
     S.planOpens = [...S.planOpens, { t: clockNow().toISOString(), on_shift: !!S.shift }].slice(-2000);
@@ -513,8 +523,32 @@ const A = {
   },
   closeTonight() {
     if (!S.tonight) return;
+    if (backPending) { // plan review I3: a row's Back hasn't landed; shut now, then step off Tonight's own entry once it has
+      reopen = () => { if (history.state && history.state.kerbTonight) sheetBack(); };
+      shutTonight();
+      return;
+    }
     if (history.state && history.state.kerbTonight) sheetBack();
     shutTonight();
+  },
+  // ADR 0016: a row drills the Tonight card into its reasons, one more history entry; every way back steps one level
+  openTonightRow(key, title, kind) {
+    if (!S.tonight) return; // plan review I3: a row deferred behind a Back that closed Tonight opens nothing
+    if (backPending) { reopen = () => A.openTonightRow(key, title, kind); return; }
+    if (S.tonight.row) history.replaceState({ kerbTonight: 1, kerbRow: 1 }, '');
+    else history.pushState({ kerbTonight: 1, kerbRow: 1 }, '');
+    S.tonight = { ...S.tonight, row: key, rowTitle: title };
+    S.scroll[`tonight:${key}`] = 0;
+    // each opening is kept for ADR 0016's kill criterion, apart from Tonight's own (they carry `why`)
+    S.planOpens = [...S.planOpens, { t: clockNow().toISOString(), on_shift: !!S.shift, why: kind }].slice(-2000);
+    store.setSetting('planOpens', S.planOpens);
+    render();
+    focusTest('tonight-back');
+  },
+  closeTonightRow() {
+    if (!S.tonight || !S.tonight.row) return;
+    if (history.state && history.state.kerbRow) sheetBack(); // its popstate finds the detail already shut
+    shutTonightRow();
   },
 };
 
@@ -529,6 +563,7 @@ function render() {
   const before = root.querySelector(':scope > main'); // keep each screen's scroll position across re-renders (review fix)
   if (before && S.renderedView) S.scroll[S.renderedView] = before.scrollTop;
   const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.test : null;
+  const focusedKey = focused && document.activeElement.dataset.key; // ADR 0016: Tonight's row buttons share one data-test
   const parts = { ...dublinParts(S.now), time: hhmm(S.now) };
   if (S.view === 'glance' && S.data) { // which rank the idle bar names, and whether Auto will start by itself
     S.detected = detectStand(S.fix, clockNow(), loggerCtx());
@@ -550,8 +585,14 @@ function render() {
     }
   } else if (S.tonight && S.view === 'glance' && !S.firstRun) { // ADR 0015: the same way, one sheet at a time
     try { sheet = tonightSheet(S, A); } catch (e) {
-      S.tonight = null;
-      if (history.state && history.state.kerbTonight) sheetBack();
+      if (S.tonight.row) { // plan review I4: a detail that can't be built steps back one level, to the list
+        S.tonight = { ...S.tonight, row: null, rowTitle: null };
+        if (history.state && history.state.kerbRow) sheetBack();
+        try { sheet = tonightSheet(S, A); } catch (e2) { S.tonight = null; sheetBack(); }
+      } else {
+        S.tonight = null;
+        if (history.state && history.state.kerbTonight) sheetBack();
+      }
       setTimeout(() => { throw e; });
     }
   }
@@ -559,7 +600,9 @@ function render() {
   const whyBody = root.querySelector('[data-test=why-body]');
   if (whyBody && S.renderedWhy) S.scroll[`why:${S.renderedWhy}`] = whyBody.scrollTop;
   const tnBody = root.querySelector('[data-test=tonight-body]');
-  if (tnBody && S.renderedTonight) S.scroll.tonight = tnBody.scrollTop;
+  if (tnBody && S.renderedTonight === 'list') S.scroll.tonight = tnBody.scrollTop;
+  const tdBody = root.querySelector('[data-test=tonight-detail-body]'); // ADR 0016: a row's detail keeps its own scroll
+  if (tdBody && typeof S.renderedTonight === 'string' && S.renderedTonight.startsWith('row:')) S.scroll[`tonight:${S.renderedTonight.slice(4)}`] = tdBody.scrollTop;
   // ADR 0009: animate only what changed since the last render; a render mid-animation continues it from where it was
   const seen = renderState(S, viewKey()), t = performance.now();
   S.motion = continueFlags(S.motion, motionFlags(S.lastRender, seen), t);
@@ -570,13 +613,19 @@ function render() {
   root.replaceChildren(...view, ...(S.firstRun ? [firstrun(A)] : []), ...(sheet ? [sheet] : []));
   S.renderedView = viewKey();
   S.renderedWhy = sheet && S.why ? S.why.id : null;
-  S.renderedTonight = !!(sheet && S.tonight);
+  S.renderedTonight = sheet && S.tonight ? (S.tonight.row ? `row:${S.tonight.row}` : 'list') : false;
   if (sheet && S.why) { const b = sheet.querySelector('[data-test=why-body]'); b.scrollTop = S.scroll[`why:${S.why.id}`] || 0; }
-  if (sheet && S.tonight) { const b = sheet.querySelector('[data-test=tonight-body]'); b.scrollTop = S.scroll.tonight || 0; }
+  if (sheet && S.tonight) {
+    const b = sheet.querySelector(S.tonight.row ? '[data-test=tonight-detail-body]' : '[data-test=tonight-body]');
+    if (b) b.scrollTop = (S.tonight.row ? S.scroll[`tonight:${S.tonight.row}`] : S.scroll.tonight) || 0;
+  }
   const after = root.querySelector(':scope > main');
   if (after && S.scroll[S.renderedView]) after.scrollTop = S.scroll[S.renderedView];
   S.changed = false;
-  if (focused) { const el = root.querySelector(`[data-test="${focused}"]`); if (el) el.focus(); }
+  if (focused) {
+    const el = root.querySelector(focusedKey ? `[data-test="${focused}"][data-key="${CSS.escape(focusedKey)}"]` : `[data-test="${focused}"]`);
+    if (el) el.focus();
+  }
   if (S.view === 'detail') drawDetailMap(root, S).catch(() => {}); // map is an aid; the sheet works without it
   for (const f of hooks.afterRender) f(S, root);
 }
@@ -625,12 +674,13 @@ async function boot() {
   if (history.state && (history.state.kerbWhy || history.state.kerbTonight)) history.replaceState(null, '');
   addEventListener('popstate', () => {
     if (backPending) { settleBack(); return; } // the Back a Close asked for: the sheet is already shut
-    if (S.why) shutWhy(); else if (S.tonight) shutTonight();
+    if (S.tonight && S.tonight.row) shutTonightRow(); // ADR 0016: Back steps out of a row's detail first
+    else if (S.why) shutWhy(); else if (S.tonight) shutTonight();
   });
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || !(S.why || S.tonight)) return;
     e.preventDefault();
-    if (S.why) A.closeWhy(); else A.closeTonight();
+    if (S.why) A.closeWhy(); else if (S.tonight.row) A.closeTonightRow(); else A.closeTonight();
   });
   applyAwake();
   recompute();
