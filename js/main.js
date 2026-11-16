@@ -7,7 +7,7 @@ import { exportFile } from './platform/share.js';
 import { dublinParts, hhmm, daysBetween } from './engine/time.js';
 import { status, isUsable } from './engine/legal.js';
 import { distM } from './engine/geo.js';
-import { recommend, score } from './engine/demand.js';
+import { recommend, score, nextPickMemo, twins } from './engine/demand.js';
 import { upcoming, nextImportant, triggersAround, timetableStatus } from './engine/triggers.js';
 import { initial as loggerInitial, step as loggerStep, deriveWaits, detectStand, autoStartFor } from './engine/logger.js';
 import { deriveShifts, currentShift, activityOf, lastActivity, shiftDue, tagWaits } from './engine/shift.js';
@@ -31,7 +31,7 @@ import { fetchWeather } from './platform/weather.js';
 import { liveItems } from './platform/relay.js';
 
 const OCB = [-6.2592, 53.3472]; // O'Connell Bridge: the reference point when location is off
-const MODEL = 'kerb-demand-1';
+const MODEL = 'kerb-demand-2'; // ADR 0014: timed pulses and legality judged for the driver's arrival
 const FILES = ['stands', 'chains', 'rules', 'triggers', 'events', 'catchments', 'params', 'meta'];
 const MOVE_M = 25;
 const stats = { renders: 0, recomputes: 0, ticks: 0 };
@@ -42,7 +42,7 @@ const weatherOn = !dev || new URLSearchParams(location.search).get('weather') ==
 
 const S = {
   ready: false, data: null, byId: {}, ctx: null, now: clockNow(), fix: null, loc: 'pending', km: null, kmRequested: null,
-  recs: [], next: null, logger: loggerInitial(), events: [], waits: [], usableIds: new Set(),
+  recs: [], nowTop: null, pick: null, next: null, logger: loggerInitial(), events: [], waits: [], usableIds: new Set(),
   settings: { nav: 'google', permit: false, theme: 'auto', keepAwake: false, relay: '', autoLog: true },
   view: 'glance', detailId: null, weather: null, live: null, storageOk: true, firstRun: false, lastTop: null, changed: false,
   online: navigator.onLine, picker: false, openSource: null, timetable: { current: true, to: null }, eventsStale: false, updateReady: false, nearby: [], cabsAhead: null, lastReport: null, ocb: OCB, device: null,
@@ -82,7 +82,14 @@ function recompute() {
   stats.recomputes++;
   S.now = clockNow();
   S.ctx = { ...S.data, weather: S.weather, live: S.live };
-  const recs = recommend(S.data.stands, S.now, S.ctx, S.km || fallbackKm(from()), { permit: S.settings.permit, n: S.data.params.rank.n });
+  const km = S.km || fallbackKm(from());
+  const recs = recommend(S.data.stands, S.now, S.ctx, km, { permit: S.settings.permit, n: S.data.params.rank.n });
+  // ADR 0014: the pick Kerb would have made judging at now (for the Why sheet and the log), and the pick memo (the
+  // logger's mode decides what counts: nothing while a wait is open, but an unanswered "Fare?" still records)
+  S.nowTop = recs[0] && recs[0].byArrival
+    ? recommend(S.data.stands, S.now, S.ctx, km, { permit: S.settings.permit, n: 1, arrival: false })[0] || null : recs[0] || null;
+  S.pick = nextPickMemo(S.pick, recs[0] ? { id: recs[0].stand.id, km: recs[0].km } : null,
+    S.now, from(), S.nowTop ? S.nowTop.stand.id : null, { mode: S.logger.mode });
   const top = recs[0] ? recs[0].stand.id : null;
   S.changed = S.lastTop !== null && top !== S.lastTop;
   S.lastTop = top;
@@ -99,7 +106,13 @@ function snapshot(id) {
   const r = S.recs.find((x) => x.stand.id === id);
   const P = S.data.params.demand;
   const d = r ? r.demand : score(S.byId[id], S.now, S.ctx, triggersAround(S.now, S.ctx, P.kernel_end_min, P.kernel_lead_min));
-  return { demand_score: d.score, demand_level: d.level, reason: d.reason, rank_order: order };
+  // ADR 0014: the pick last shown at the stop he drove away from, the pick Kerb would have made at now, and the speed
+  // guess in force, so realised speed and the effect can be measured from the log (twins count as the same place)
+  const m = S.pick && S.pick.memo;
+  const differs = !!m && !!m.nowId && m.nowId !== m.id && !(S.byId[m.id] && S.byId[m.nowId] && twins(S.byId[m.id], S.byId[m.nowId]));
+  return { demand_score: d.score, demand_level: d.level, reason: d.reason, rank_order: order,
+    pick_id: m ? m.id : null, pick_km: m ? m.km : null, pick_t: m ? m.t.toISOString() : null, now_pick_id: m ? m.nowId : null,
+    now_pick_differs: differs, drive_kmh: S.data.params.rank.drive_kmh };
 }
 
 function loggerCtx() {

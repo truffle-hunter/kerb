@@ -1,6 +1,8 @@
 // "Why this rank?" (ADR 0013, spec docs/superpowers/specs/2026-11-15-kerb-why-design.md §3-4): every reason Kerb picked a
 // stand, as rows and lines. Pure: all wording and arithmetic live here; the sheet only maps fields to nodes.
 import { bearingDeg, cardinal } from './geo.js';
+import { arrivalAt, twins } from './demand.js';
+import { status, isUsable } from './legal.js';
 
 const sum = (xs) => xs.reduce((a, b) => a + b, 0);
 const kmText = (km) => `${km < 10 ? km.toFixed(1) : Math.round(km)} km`;
@@ -77,11 +79,20 @@ function versusLine(me, o, X) {
   return { id: o.stand.id, name: o.stand.name, close, text: `${name}: ${word} demand${why}, ${dist}.${close ? ' Close call.' : ''}` };
 }
 
+/** ADR 0014: when the top pick judged at now differs, one more sentence for the verdict ('' when it doesn't). */
+function atNowLine(r, nowTop, ctx) {
+  if (!r.byArrival || !nowTop || nowTop.stand.id === r.stand.id || twins(nowTop.stand, r.stand)) return ''; // a twin is the same place
+  const name = nowTop.stand.name === r.stand.name ? `The other ${nowTop.stand.name} stand` : nowTop.stand.name;
+  const shut = !isUsable(status(nowTop.stand, arrivalAt(nowTop.at, nowTop.km, ctx.params), ctx));
+  return shut ? ` ${name} closes before you'd get there.` : ` ${name} looks better right now, but not by the time you'd get there.`;
+}
+
 /**
  * Every reason for stand `id` among the recommendations `recs` (recommend()'s output), or null if it isn't one of them.
- * opts: {permit} as in Settings; {from} [lon, lat] for the compass direction.
+ * opts: {permit} as in Settings; {from} [lon, lat] for the compass direction; {nowTop} the top record judged at now
+ * (ADR 0014's counterfactual), so the verdict can say when Kerb would have sent him elsewhere had it judged at now.
  */
-export function explain(recs, id, ctx, { permit = false, from = null } = {}) {
+export function explain(recs, id, ctx, { permit = false, from = null, nowTop = null } = {}) {
   const r = recs.find((x) => x.stand.id === id);
   if (!r) return null;
   const X = ctx.params.explain, P = ctx.params.demand;
@@ -89,14 +100,16 @@ export function explain(recs, id, ctx, { permit = false, from = null } = {}) {
   const dir = from && r.stand.head ? ` ${cardinal(bearingDeg(from, r.stand.head))}` : '';
   const against = Math.round(100 * (1 - 1 / (1 + r.km / ctx.params.rank.k_km)));
   const m = r.km * 1000, far = m < 100 ? near(m) : kmText(r.km); // "30 m", never "0.0 km"
-  const lines = ['Kerb only suggests stands you can legally use right now.'];
+  const lines = [r.byArrival ? "Kerb only suggests stands you can legally use now and when you'd get there."
+    : 'Kerb only suggests stands you can legally use right now.'];
   if (r.stand.access === 'daa_permit') lines.push('Airport stand: shown because your permit is on in Settings.');
   else if (!permit) lines.push('Airport permit stands are left out (permit off in Settings).');
   return {
     stand: r.stand, top, level: r.demand.level,
-    verdict: top ? 'Best demand for the distance, of the stands you can legally use now.' : `Kerb now suggests ${recs[0].stand.name}.`,
+    verdict: top ? `Best demand for the distance, of the stands you can legally use now.${atNowLine(r, nowTop, ctx)}` : `Kerb now suggests ${recs[0].stand.name}.`,
     rows: demandRows(r.demand, P, X, ctx.params.catchment.radius_m),
     distance: { text: `${m < 20 ? far : r.approx ? `about ${far}${dir}` : `${far}${dir} by road`} · ${against < 5 ? 'distance barely counts' : `distance counts ${against}% against it`}` },
+    arrival: r.byArrival ? { text: `Judged for when you'd get there, not now. Kerb guesses ${ctx.params.rank.drive_kmh} km/h door to door.` } : null,
     legal: { status: r.status, lines },
     versus: recs.filter((o) => o !== r).map((o) => versusLine(r, o, X)),
   };

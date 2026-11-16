@@ -22,6 +22,7 @@ function reasons(S, e, switchBtn) {
       r.note ? h('span', { class: 'note' }, r.note) : null))),
     h('h3', {}, 'Getting there'),
     h('p', { 'data-test': 'why-distance' }, e.distance.text),
+    e.arrival ? h('p', { class: 'note', 'data-test': 'why-arrival' }, e.arrival.text) : null, // ADR 0014
     h('h3', {}, 'Legal'),
     h('p', { 'data-test': 'why-legal' }, legalLine(e.legal.status)),
     e.legal.lines.map((t) => h('p', { class: 'note' }, t)),
@@ -35,7 +36,7 @@ function reasons(S, e, switchBtn) {
 /** The sheet for S.why.id. It stays on that stand when the recommendation changes, and offers the new top instead. */
 export function why(S, A, from) {
   const s = S.byId[S.why.id];
-  const e = explain(S.recs, s.id, S.ctx, { permit: S.settings.permit, from });
+  const e = explain(S.recs, s.id, S.ctx, { permit: S.settings.permit, from, nowTop: S.nowTop });
   const top = S.recs[0];
   const switchBtn = top && top.stand.id !== s.id
     ? h('button', { class: 'btn quiet', type: 'button', 'data-test': 'why-switch', onclick: () => A.openWhy(top.stand.id) }, `Why ${top.stand.name}?`)

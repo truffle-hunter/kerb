@@ -26,7 +26,16 @@ export function kernel(dtMin, P) {
   return 0;
 }
 
-export function score(stand, now, ctx, trig) {
+/** ADR 0014: when the driver would reach a stand `km` away at the one guessed door-to-door speed, to the minute. */
+export function arrivalAt(now, km, params) {
+  return new Date(Math.round((now.getTime() + (km / params.rank.drive_kmh) * 3600000) / MIN) * MIN);
+}
+
+/**
+ * The demand guess for `stand`. The time-of-week base, catchment and rain are judged at `now`. With `at` (ADR 0014,
+ * the driver's estimated arrival) each trigger's kernel is read at `at` instead, so a pulse over by then counts nothing.
+ */
+export function score(stand, now, ctx, trig, at = null) {
   const P = ctx.params.demand;
   const p = dublinParts(now);
   const svc = dublinParts(new Date(now.getTime() - P.service_day_start_hour * 60 * MIN));
@@ -50,12 +59,13 @@ export function score(stand, now, ctx, trig) {
   // ADR 0013: the same numbers, split for "Why this rank?" (additive: score, level, reason and parts are unchanged)
   const detail = { when: timeWords(now, P), base, night, time: base * P.catch_floor,
     catch: Object.fromEntries(Object.entries(comp).map(([k, v]) => [k, (base * v) / P.catch_norm])),
-    counts: { pubs: c.pubs, clubs: c.clubs, rooms: c.rooms, stations: c.stations }, triggers: [], rain: null };
+    counts: { pubs: c.pubs, clubs: c.clubs, rooms: c.rooms, stations: c.stations }, triggers: [], rain: null, at };
+  const judged = at || now;
   const pubShare = Math.min(1, (c.idx_pub + c.idx_club) / P.catch_norm);
   let rain = 0;
   for (const t of trig || []) {
     if (t.kind === 'rain') { rain = P.kind_weight.rain; parts.push({ label: t.label, value: 0 }); continue; }
-    const k = kernel((now - t.t) / MIN, P);
+    const k = kernel((judged - t.t) / MIN, P);
     if (!k) continue;
     const near = t.place && stand.head ? distM(stand.head, t.place) : null;
     const prox = t.kind === 'closing' || t.kind === 'late_closing' ? pubShare
@@ -78,18 +88,31 @@ export function score(stand, now, ctx, trig) {
   return { score: total, level, reason, parts, detail };
 }
 
-/** Top stands to head for: recommendable, legally usable now, permit-gated, ranked by demand ÷ (1 + km / k). */
-export function recommend(stands, now, ctx, kmById, { permit = false, n = 3 } = {}) {
-  const trig = triggersAround(now, ctx, ctx.params.demand.kernel_end_min, ctx.params.demand.kernel_lead_min ?? 60);
-  const k = ctx.params.rank.k_km;
-  const out = [];
+/**
+ * Top stands to head for: recommendable, permit-gated, ranked by demand ÷ (1 + km / k). With `arrival` (ADR 0014;
+ * default from params.rank) each stand is judged for when the driver would get there: usable now and at that moment,
+ * its timed pulses read then. Each record carries `at`, that moment (or `now` when judged at now), and `byArrival`.
+ */
+export function recommend(stands, now, ctx, kmById, { permit = false, n = 3, arrival } = {}) {
+  const R = ctx.params.rank, P = ctx.params.demand;
+  const byArrival = arrival ?? (R.arrival !== false && R.drive_kmh > 0);
+  const cands = [];
   for (const s of stands) {
     if (!s.recommendable || (s.access === 'daa_permit' && !permit) || !kmById[s.id]) continue;
     const st = status(s, now, ctx);
     if (!isUsable(st)) continue;
-    const d = score(s, now, ctx, trig);
     const { km, approx } = kmById[s.id];
-    out.push({ stand: s, km, approx, status: st, demand: d, rankScore: d.score / (1 + km / k) });
+    const at = byArrival ? arrivalAt(now, km, ctx.params) : now;
+    if (byArrival && !isUsable(status(s, at, ctx))) continue; // shut by the time he'd get there (ruling 2.4)
+    cands.push({ s, st, km, approx, at });
+  }
+  // one trigger fetch per glance, the look-ahead widened by the longest drive among the candidates (ruling 2.2)
+  const ahead = cands.reduce((m, c) => Math.max(m, (c.at - now) / MIN), 0);
+  const trig = triggersAround(now, ctx, P.kernel_end_min, (P.kernel_lead_min ?? 60) + Math.ceil(ahead));
+  const out = [];
+  for (const { s, st, km, approx, at } of cands) {
+    const d = score(s, now, ctx, trig, byArrival ? at : null);
+    out.push({ stand: s, km, approx, status: st, at, byArrival, demand: d, rankScore: d.score / (1 + km / R.k_km) });
   }
   out.sort((a, b) => b.rankScore - a.rankScore);
   // Alternatives must be different places: skip a stand on the same street within 300 m of one already picked
@@ -97,9 +120,29 @@ export function recommend(stands, now, ctx, kmById, { permit = false, n = 3 } = 
   const picked = [];
   for (const r of out) {
     if (picked.length >= n) break;
-    const dup = picked.some((p) => p.stand.street === r.stand.street && p.stand.head && r.stand.head
-      && distM(p.stand.head, r.stand.head) < DISTINCT_M);
-    if (!dup) picked.push(r);
+    if (!picked.some((p) => twins(p.stand, r.stand))) picked.push(r);
   }
   return picked;
+}
+
+/** Two stands on the same street within 300 m (Lansdowne Road has three): one place to a driver. */
+export function twins(a, b) {
+  return a.street === b.street && !!a.head && !!b.head && distM(a.head, b.head) < DISTINCT_M;
+}
+
+/**
+ * ADR 0014's on-device record: the top pick last shown at a stop the driver then drove away from (a drop-off, a long
+ * light). `here` is where he is now ({p, since, pick}); a stop is `stopS` or more within `moveM`. Leaving a stop makes
+ * its last pick the memo, so the rank he is queued at never overwrites the drive that brought him there.
+ * `mode` is the logger's: while a wait is open ('waiting') nothing is recorded, and a stop where a wait was open
+ * never yields a memo, so leaving a rank leaves no stale pick; an unanswered "Fare?" ('outcome') still records (review fix).
+ * top = {id, km} | null; nowId = the pick judged at now (the counterfactual). Returns {here, memo}; memo = {id, km, t, nowId} | null.
+ */
+export function nextPickMemo(state, top, now, p, nowId, { mode = 'idle', moveM = 50, stopS = 30 } = {}) {
+  const waiting = mode === 'waiting';
+  const pick = top && !waiting ? { id: top.id, km: top.km, t: now, nowId } : null;
+  const here = state && state.here, memo = state ? state.memo : null;
+  if (here && distM(here.p, p) < moveM) return { here: { ...here, pick, waited: here.waited || waiting }, memo };
+  const wasStop = here && now - here.since >= stopS * 1000;
+  return { here: { p, since: now, pick, waited: waiting }, memo: wasStop ? (here.waited ? null : here.pick) : memo };
 }
