@@ -195,6 +195,11 @@ export function longModel({ ctx, now, permit = false, kmById = null, waits = [] 
       if (best) e.nearest = `Nearest: ${J.byId.get(best[0]).name}, ${fmtKm(best[1].km, best[1].approx)} from you`;
     }
     e.record = record(waits, e.key, now, L);
+    // ADR 0018 (amends ADR 0017 L1): the listed stands as one-tap Go rows, their legal status at now when not open
+    e.go = e.stands.map((id) => {
+      const s = J.byId.get(id), st = status(s, now, ctx);
+      return { id, name: s.name, head: s.head || null, where: null, twins: 1, skipped: false, unknown: false, place: null, now: COUNTS.has(st.state) ? null : st };
+    });
   }
   const now_ = out.filter((e) => e.open)
     .sort((a, b) => LEVEL[b.level] - LEVEL[a.level] || KINDS.indexOf(a.kind) - KINDS.indexOf(b.kind) || (a.from || 0) - (b.from || 0));

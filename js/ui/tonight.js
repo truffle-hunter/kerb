@@ -1,7 +1,8 @@
 // "Tonight" (ADR 0015, spec docs/superpowers/specs/2026-11-16-kerb-tonight-design.md): the night ahead on one easy-to-close
 // sheet, built like "Why this rank?" (ADR 0013). It maps tonightModel() onto nodes and does no arithmetic of its own.
 // ADR 0016: every wave and quiet row is a button that drills the card into that row's reasons (rowDetail()).
-import { h } from './dom.js';
+import { h, legalLine } from './dom.js';
+import { navUrl } from '../platform/nav.js';
 import { tonightModel, dayLabel } from '../engine/tonight.js';
 import { rowDetail } from '../engine/tonightwhy.js';
 import { longModel } from '../engine/longruns.js';
@@ -70,15 +71,16 @@ function longOf(S) {
   return memoLong.model;
 }
 
-const longEntry = (e) => h('li', { class: 'lrentry', 'data-test': 'long-entry', 'data-key': e.key },
+const longEntry = (S, A, e) => h('li', { class: 'lrentry', 'data-test': 'long-entry', 'data-key': e.key },
   h('p', { class: 'lrhead' }, h('b', {}, e.name), ` · ${e.when} · Demand likely: `, h('b', {}, e.level)),
-  e.places ? h('p', { class: 'lrplaces' }, e.places) : null,
+  e.go && e.go.length ? goList(e.go.map((g, i) => goRow(S, A, g, { key: `go:${e.key}:${i}:${g.id}`, test: 'long-go', from: 'long', kind: e.key })))
+    : e.places ? h('p', { class: 'lrplaces' }, e.places) : null,
   e.nearest ? h('p', { class: 'note lrnear' }, e.nearest) : null,
   h('p', { class: 'lrtext' }, e.text),
   e.record ? h('p', { class: 'note lrrec', 'data-test': 'long-record' }, e.record) : null);
 
 /** Long runs (ADR 0017): where a long fare is more likely, in the card where the list was. "Back to tonight" is the only
- * button; every way back steps one level. The entries are not buttons and have no Go. */
+ * button; every way back steps one level. The entries are not buttons; their listed stands are Go rows (ADR 0018). */
 function longSheet(S, A) {
   const m = longOf(S);
   const body = [
@@ -86,9 +88,9 @@ function longSheet(S, A) {
     h('p', { class: 'note', 'data-test': 'long-sub' }, m.sub),
     m.stale ? h('p', { class: 'warn', 'data-test': 'long-stale' }, m.stale) : null,
     h('h3', {}, 'Now'),
-    m.now.length ? h('ul', { class: 'lrlist', 'data-test': 'long-now' }, m.now.map(longEntry))
+    m.now.length ? h('ul', { class: 'lrlist', 'data-test': 'long-now' }, m.now.map((e) => longEntry(S, A, e)))
       : h('p', { 'data-test': 'long-empty' }, m.empty),
-    m.later.length ? [h('h3', {}, 'Later'), h('ul', { class: 'lrlist', 'data-test': 'long-later' }, m.later.map(longEntry))] : null,
+    m.later.length ? [h('h3', {}, 'Later'), h('ul', { class: 'lrlist', 'data-test': 'long-later' }, m.later.map((e) => longEntry(S, A, e)))] : null,
     h('h3', {}, 'Why length matters'),
     h('p', { class: 'note', 'data-test': 'long-means' }, m.means),
     h('p', { class: 'note', 'data-test': 'long-tariff' }, m.tariff),
@@ -108,6 +110,36 @@ const longButton = (A) => h('button', { class: 'tnopen tnlong', type: 'button', 
   'aria-label': "Long runs: where they're more likely", onclick: () => A.openLong() },
 h('span', { class: 'tntitle' }, h('span', { class: 'whycue' }, 'Long runs'), ": where they're more likely"));
 
+// ADR 0018: every rank a detail or Long runs names is a full-width row that is one link to his nav app (navUrl, his
+// Settings choice), ending in a Go pill. The click records the hand-off and never renders: a re-render would detach the
+// link mid-click. A stand with no position is a text row with no pill.
+function goNote(g) {
+  if (g.now && g.now.state !== 'hours_unknown') return `Now: ${legalLine(g.now)}`;
+  return g.unknown ? 'Hours not published' : null;
+}
+function goRow(S, A, g, { key, test, from, kind, clock = null, label = null }) {
+  const note = goNote(g);
+  const twin = g.twins > 1 ? (g.skipped ? `${g.twins} stands · Go leads to the nearest one open then`
+    : `${g.twins} stands · Go leads to the one nearest the ${g.place}`) : null;
+  const where = g.where ? (g.place ? `, ${g.where} from the ${g.place}` : `, ${g.where} within ${S.data.params.catchment.radius_m} m`) : '';
+  // final review I1: the label replaces the row's content for a screen reader, so it carries the line's clock and words
+  // and the twin note too, never only the hand-off
+  const aria = `${clock ? `${clock} ${label}. ` : ''}Go to ${g.name}${where}, in your navigation app${note ? `. ${note}` : ''}${twin ? `. ${twin}` : ''}`;
+  const body = [
+    label ? h('span', { class: 'tngolabel' }, label) : null,
+    h('span', { class: 'tngoline' }, h('span', { class: 'tngoname' }, g.name), g.where ? h('span', { class: 'tngowhere' }, g.where) : null,
+      g.head ? h('span', { class: 'tnpill', 'aria-hidden': 'true' }, 'Go') : null),
+    note ? h('span', { class: 'tngonow', 'data-test': 'go-now' }, note) : null,
+    twin ? h('span', { class: 'note tngotwin' }, twin) : null,
+  ];
+  const content = clock ? [h('span', { class: 'tntime' }, clock), h('span', { class: 'tngobody' }, body)] : body;
+  const attrs = { class: `tngo${clock ? ' timed' : ''}`, 'data-test': test, 'data-stand': g.id, 'data-key': key };
+  if (!g.head) return h('div', { ...attrs, class: `${attrs.class} nolink` }, content);
+  return h('a', { ...attrs, href: navUrl(S.settings.nav, g.head, g.name), target: '_blank', rel: 'noopener', 'aria-label': aria,
+    onclick: () => A.handoff(g.id, from, kind) }, content);
+}
+const goList = (rows) => h('div', { class: 'tngolist' }, rows);
+
 // A timetable line "HH:MM label · rank" sits in the list's clock column with the rank under it; a source line is a note.
 const TIMED = /^(\d\d:\d\d) (.+?)(?: · (.+))?$/;
 const line = (l, note) => {
@@ -118,6 +150,28 @@ const line = (l, note) => {
 const section = (head, test, lines, noteFrom = Infinity) => (lines && lines.length
   ? [h('h3', {}, head), h('div', { class: 'tnsec', 'data-test': test }, lines.map((l, i) => line(l, i >= noteFrom)))] : null);
 
+/** "When", with each timetable line that names a rank as a Go row (ADR 0018), the clock column kept. */
+function whenSection(S, A, d) {
+  if (!d.when || !d.when.length) return null;
+  const go = d.whenGo || [];
+  if (!go.some(Boolean)) return section('When', 'tonight-detail-when', d.when);
+  const rows = d.when.map((l, i) => {
+    const g = go[i], m = g && TIMED.exec(l);
+    return m ? goRow(S, A, g, { key: `go:when:${i}:${g.id}`, test: 'tonight-go', from: 'row', kind: d.kind, clock: m[1], label: m[2] }) : line(l);
+  });
+  return [h('h3', {}, 'When'), h('div', { class: 'tnsec', 'data-test': 'tonight-detail-when' }, rows)];
+}
+
+/** "Ranks nearby": the lead, the ranks as Go rows, then the counts as text (ADR 0018); the old lines when none is listed. */
+function ranksSection(S, A, d) {
+  if (!d.go || !d.go.items.length) return section('Ranks nearby', 'tonight-detail-ranks', d.ranks);
+  const where = d.kind === 'closing' || d.kind === 'late_closing' ? 'pubs' : 'ranks';
+  return [h('h3', {}, 'Ranks nearby'), h('div', { class: 'tnsec', 'data-test': 'tonight-detail-ranks' },
+    d.go.lead ? h('p', {}, d.go.lead) : null,
+    goList(d.go.items.map((g, i) => goRow(S, A, g, { key: `go:${where}:${i}:${g.id}`, test: 'tonight-go', from: 'row', kind: d.kind }))),
+    d.go.rest.map((l) => h('p', {}, l)))];
+}
+
 /** A row's reasons, in the card where the list was (ADR 0016 J1). "Back to tonight" is the only button: every way back
  * steps one level. A row that has gone keeps the last title it had and says so. */
 function detailSheet(S, A) {
@@ -126,8 +180,8 @@ function detailSheet(S, A) {
   const body = d.passed ? [h('p', { 'data-test': 'tonight-detail-passed' }, "This has passed and left tonight's list.")] : [
     d.lead ? h('p', { 'data-test': 'tonight-detail-lead' }, d.lead) : null,
     section('Before and after', 'tonight-detail-bounds', d.bounds ? [d.bounds] : null),
-    section('When', 'tonight-detail-when', d.when),
-    section('Ranks nearby', 'tonight-detail-ranks', d.ranks),
+    whenSection(S, A, d),
+    ranksSection(S, A, d),
     section('At that hour', 'tonight-detail-hour', [d.hour]),
     section('Around the same time', 'tonight-detail-around', d.around ? [d.around] : null),
     section('How much Kerb counts it', 'tonight-detail-strength', d.strength, 1),

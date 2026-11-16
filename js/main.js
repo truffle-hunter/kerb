@@ -454,6 +454,12 @@ const A = {
       if (t) { t.focus(); t.select(); }
     }
   },
+  // ADR 0018: a rank row's link hands off to his nav app; this only records it. Never a render: it would detach the link
+  // mid-click, and a disconnected link doesn't navigate
+  handoff(stand, from, kind) {
+    S.planOpens = [...S.planOpens, { t: clockNow().toISOString(), on_shift: !!S.shift, why: 'go', stand, from, kind }].slice(-2000);
+    store.setSetting('planOpens', S.planOpens);
+  },
   trip(wait, long, source) { // ADR 0017: "long run (10 km+)?" for a fare, from the wait bar or the Log; the latest answer wins
     record({ type: 'trip', t: at().toISOString(), wait, long: long === true, source });
     refreshLog();

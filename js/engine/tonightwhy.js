@@ -54,15 +54,32 @@ function places(list) {
   return groups.filter((g) => !seen.has(g[0].s.name) && seen.add(g[0].s.name));
 }
 
-function placeText(g) {
+function whereOf(g) {
   const lo = g[0].d, hi = g[g.length - 1].d;
-  const where = g.length === 1 || r10(lo) === r10(hi) ? dist(lo) : `${lo < 20 ? 'under 20' : r10(lo)}–${r10(hi)} m`;
-  const unknown = !g.some((o) => OPEN.has(o.state));
-  return `${g[0].s.name}${g.length > 1 ? ` (${g.length} stands)` : ''} ${where}${unknown ? ', hours not published' : ''}`;
+  return g.length === 1 || r10(lo) === r10(hi) ? dist(lo) : `${lo < 20 ? 'under 20' : r10(lo)}–${r10(hi)} m`;
 }
 
-/** Ranks around one place (a let-out, or a row whose items share one place), judged at the item's own time (spec §6). */
-function placeRanks(ctx, item) {
+function placeText(g) {
+  const unknown = !g.some((o) => OPEN.has(o.state));
+  return `${g[0].s.name}${g.length > 1 ? ` (${g.length} stands)` : ''} ${whereOf(g)}${unknown ? ', hours not published' : ''}`;
+}
+
+/** ADR 0018: a rank as a one-tap row to his nav app. `now` is its legal status at the tap when that isn't open. */
+export function goItem(s, now, ctx, { where = null, twins = 1, skipped = false, unknown = false, place = null } = {}) {
+  const st = status(s, now, ctx);
+  return { id: s.id, name: s.name, head: s.head || null, where, twins, skipped, unknown, place, now: OPEN.has(st.state) ? null : st };
+}
+
+/** A twin group's Go: its nearest member open then, else the first (spec §2). */
+function groupGo(g, now, ctx, place) {
+  const open = g.find((o) => OPEN.has(o.state));
+  const chosen = open || g[0];
+  return goItem(chosen.s, now, ctx, { where: whereOf(g), twins: g.length, skipped: chosen !== g[0], unknown: !open, place });
+}
+
+/** Ranks around one place (a let-out, or a row whose items share one place), judged at the item's own time (spec §6).
+ * ADR 0018: also the same ranks as Go rows: {lines, go: {lead, items, rest}}; the lines are unchanged. */
+function placeRanks(ctx, item, now) {
   const radius = radiusOf(item.kind, ctx.params.demand);
   const near = nearStands(ctx, item.place, item.t, radius);
   const shown = places(near.filter((o) => OPEN.has(o.state) || o.state === 'hours_unknown')).slice(0, 3);
@@ -73,24 +90,33 @@ function placeRanks(ctx, item) {
     : open === 1 ? `1 rank within ${within(radius)} is open then.` : `${open} ranks within ${within(radius)} are open then.`);
   const idle = [...new Set(near.filter((o) => o.state === 'event_inactive').map((o) => o.s.name))];
   if (idle.length) lines.push(`Not in use then: ${idle.join(', ')} (event stands, no event on).`);
-  return lines;
+  const word = PLACE[item.kind] || 'stop';
+  const go = shown.length ? { lead: lines[0].slice(0, lines[0].indexOf(': ')), items: shown.map((g) => groupGo(g, now, ctx, word)), rest: lines.slice(1) }
+    : { lead: null, items: [], rest: lines };
+  return { lines, go };
 }
 
 /** The nearest rank open (or of unpublished hours) at one item's time, for rows that span more than one place. */
-function itemRank(ctx, x) {
+function itemRank(ctx, x, now) {
   const radius = radiusOf(x.kind, ctx.params.demand);
   const o = nearStands(ctx, x.place, x.t, radius).find((y) => OPEN.has(y.state) || y.state === 'hours_unknown');
-  return o ? ` · ${o.s.name} ${dist(o.d)}${o.state === 'hours_unknown' ? ', hours not published' : ''}` : ` · no rank open then within ${within(radius)}`;
+  if (!o) return { text: ` · no rank open then within ${within(radius)}`, go: null };
+  return { text: ` · ${o.s.name} ${dist(o.d)}${o.state === 'hours_unknown' ? ', hours not published' : ''}`,
+    go: goItem(o.s, now, ctx, { where: dist(o.d), unknown: o.state === 'hours_unknown', place: PLACE[x.kind] || 'stop' }) };
 }
 
 /** Closing times: citywide, so the ranks with most pubs within the catchment radius, open then (ties: stands.json order). */
-function pubRanks(ctx, t) {
+function pubRanks(ctx, t, now) {
   const cat = ctx.catchments || {};
   const top = (ctx.stands || []).filter((s) => s.recommendable && cat[s.id] && OPEN.has(status(s, t, ctx).state))
     .sort((a, b) => cat[b.id].pubs - cat[a.id].pubs);
-  const seen = new Set(), names = [];
-  for (const s of top) { if (seen.has(s.name)) continue; seen.add(s.name); names.push(`${s.name} ${cat[s.id].pubs}`); if (names.length === 3) break; }
-  return [`Citywide; Kerb counts it more where more pubs are within ${ctx.params.catchment.radius_m} m.${names.length ? ` Most: ${names.join(' · ')}.` : ''}`];
+  const seen = new Set(), names = [], picks = [];
+  for (const s of top) { if (seen.has(s.name)) continue; seen.add(s.name); names.push(`${s.name} ${cat[s.id].pubs}`); picks.push(s); if (names.length === 3) break; }
+  const head = `Citywide; Kerb counts it more where more pubs are within ${ctx.params.catchment.radius_m} m.`;
+  const lines = [`${head}${names.length ? ` Most: ${names.join(' · ')}.` : ''}`];
+  const go = picks.length ? { lead: `${head} Most, open then:`, items: picks.map((s) => goItem(s, now, ctx, { where: `${cat[s.id].pubs} pubs` })), rest: [] }
+    : { lead: null, items: [], rest: lines };
+  return { lines, go };
 }
 
 function eventWhen(ctx, x) {
@@ -198,7 +224,7 @@ function quietDetail(key, gap, night, now, forecast, params) {
     key, kind: 'quiet', passed: false, title: `${hhmm(gap.from)}–${hhmm(gap.to)} Quiet · nothing scheduled`,
     lead: 'No let-out, train, tram, ferry or closing time falls here.',
     when: [`Kerb counts each timed item from ${spanWords(D.kernel_lead_min)} before it to ${spanWords(D.kernel_end_min)} after (a guess), so the gap runs from ${hhmm(gap.from)} to ${hhmm(gap.to)}.`],
-    ranks: null, hour: hourLine(gap.from, gap.to, forecast, now, params), around: null, strength: null, record: null,
+    ranks: null, go: null, whenGo: [null], hour: hourLine(gap.from, gap.to, forecast, now, params), around: null, strength: null, record: null,
     bounds: [before ? `Before: ${clockOf(before)} ${before.title}.` : null, after ? `After: ${clockOf(after)} ${after.title}.` : null].filter(Boolean).join(' ') || null,
     footer: FOOTER,
   };
@@ -227,20 +253,24 @@ export function rowDetail({ ctx, now, forecast = null, waits = [], key, night = 
   if (!row) return { key, passed: true, footer: FOOTER };
   const x = row.items[0];
   const multi = new Set(row.items.map((i) => (i.place ? i.place.join(',') : ''))).size > 1;
-  let when, ranks = null;
-  if (row.kind === 'event') { when = eventWhen(ctx, x); ranks = placeRanks(ctx, x); }
-  else if (row.kind === 'closing') { when = closingWhen(x); ranks = pubRanks(ctx, x.t); }
+  let when, ranks = null, go = null, whenGo = null;
+  const take = (r) => { ranks = r.lines; go = r.go; };
+  if (row.kind === 'event') { when = eventWhen(ctx, x); take(placeRanks(ctx, x, now)); }
+  else if (row.kind === 'closing') { when = closingWhen(x); take(pubRanks(ctx, x.t, now)); }
   else if (row.kind === 'late_closing') {
     when = [`Late bars with an exemption close at ${hhmm(x.t)} (assumed); Kerb doesn't know which are open late tonight.`, "Source: Kerb's assumption, not a list."];
-    ranks = pubRanks(ctx, x.t);
+    take(pubRanks(ctx, x.t, now));
   } else {
-    when = [...row.items.map((i) => `${hhmm(i.t)} ${stripClock(i.label, i.t)}${multi ? itemRank(ctx, i) : ''}`),
+    const per = row.items.map((i) => (multi ? itemRank(ctx, i, now) : { text: '', go: null })); // ADR 0018: each line's rank as a Go
+    when = [...row.items.map((i, k) => `${hhmm(i.t)} ${stripClock(i.label, i.t)}${per[k].text}`),
       ...(TIMETABLE.has(row.kind) ? [timetableSource(ctx, row.kind)] : [])];
-    if (!multi && x.place) ranks = placeRanks(ctx, x);
+    whenGo = [...per.map((p) => p.go), ...(TIMETABLE.has(row.kind) ? [null] : [])];
+    if (!multi && x.place) take(placeRanks(ctx, x, now));
   }
+  if (!whenGo) whenGo = when.map(() => null);
   const rec = row.recordKeys.length ? recordLine(rowRecord(waits, row, now)) || "Kerb shows your own waits at this once you've logged 3." : null;
   return {
-    key, kind: row.kind, passed: false, title: `${clockOf(row)} ${row.title}`, lead: lead(row, x), when, ranks,
+    key, kind: row.kind, passed: false, title: `${clockOf(row)} ${row.title}`, lead: lead(row, x), when, ranks, go, whenGo,
     hour: hourLine(row.from, row.to, forecast, now, params), around: around(row, n.all, params), strength: strength(row, params),
     record: rec ? { text: rec, note: RECORD_NOTE } : null, bounds: null, footer: FOOTER,
   };

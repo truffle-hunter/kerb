@@ -264,8 +264,9 @@ textarea.report { font: inherit; font-size: var(--t0); line-height: var(--lh0); 
 .a-first > .overlay .card { animation: k-sheet var(--d2) var(--ease-in) var(--a-first, 0ms); }
 .a-update [data-test=update-ready] { animation: k-drop var(--d1) var(--ease-in) var(--a-update, 0ms); }
 /* Press feedback: a small give under the thumb. */
-.btn, .go, .iconbtn, .alt, .rankrow, .nudge, .shiftchip, .modeswitch .seg, .maptoggle { transition: transform var(--d0) var(--ease-in); }
-.btn:not(:disabled):active, .go:active, .iconbtn:active, .alt:active, .rankrow:active, .nudge:active, .shiftchip:active, .modeswitch .seg:active, .maptoggle:active { transform: scale(0.97); }
+.btn, .go, .iconbtn, .alt, .rankrow, .nudge, .shiftchip, .modeswitch .seg, .maptoggle, .tngo { transition: transform var(--d0) var(--ease-in); }
+.btn:not(:disabled):active, .go:active, .iconbtn:active, .alt:active, .rankrow:active, .nudge:active, .shiftchip:active, .modeswitch .seg:active, .maptoggle:active,
+.tngo:not(.nolink):active { transform: scale(0.97); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
@@ -357,3 +358,20 @@ textarea.report { font: inherit; font-size: var(--t0); line-height: var(--lh0); 
 }
 .logrow .rowlong { grid-column: 1 / -1; color: var(--ink-dim); font-size: var(--t0); }
 .logrow .rowactions .note { align-self: center; }
+/* ADR 0018: a rank named in a Tonight detail or Long runs is one link to his nav app: a full-width row ending in a Go pill */
+.tngolist { display: grid; border-top: 1px solid var(--line); }
+.tngo { all: unset; box-sizing: border-box; display: grid; gap: 2px; align-content: center; min-height: 48px; padding: var(--s2) 0;
+  border-bottom: 1px solid var(--line); color: var(--ink); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.tngo:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.tngo.nolink { cursor: default; }
+.tngo.timed { grid-template-columns: 3.2rem minmax(0, 1fr); column-gap: var(--s3); align-items: baseline; }
+.tngobody { display: grid; gap: 2px; min-width: 0; }
+.tngoline { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; column-gap: var(--s3); align-items: center; }
+.tngoname { overflow-wrap: anywhere; font-size: var(--t05); line-height: var(--lh05); } /* the place reads at the card's body size */
+.whybody .tngo .tngolabel { font-size: var(--t0); color: var(--ink-dim); }
+.tngowhere { white-space: nowrap; font-size: var(--t0); color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+.tnpill { white-space: nowrap; padding: 2px var(--s3); border-radius: var(--radius-l); background: var(--go); color: var(--go-ink); /* the glance Go's pair: AA in both themes */
+  font-size: var(--t0); font-weight: var(--w-bold); line-height: 1.4; }
+.tngonow { color: var(--warn); font-size: var(--t0); font-weight: var(--w-bold); }
+.tngo .tngotwin { font-size: var(--t0); }
+.lrentry .tngolist { margin: var(--s1) 0; }
