@@ -10,13 +10,15 @@ import { distM } from './engine/geo.js';
 import { recommend, score, nextPickMemo, twins } from './engine/demand.js';
 import { upcoming, nextImportant, triggersAround, timetableStatus } from './engine/triggers.js';
 import { initial as loggerInitial, step as loggerStep, deriveWaits, detectStand, autoStartFor } from './engine/logger.js';
-import { deriveShifts, currentShift, activityOf, lastActivity, shiftDue, tagWaits } from './engine/shift.js';
+import { deriveShifts, currentShift, activityOf, lastActivity, shiftDue, tagWaits, onShiftMinutes } from './engine/shift.js';
 import { toJSON, toCSV } from './engine/export.js';
-import { parseBackup, mergeEvents, closeDanglingWaits, closeDanglingShifts, hasOwnLog } from './engine/backup.js';
+import { parseBackup, mergeEvents, closeDanglingWaits, closeDanglingShifts, hasOwnLog, mergeOpens } from './engine/backup.js';
+import { tonightCard, stillToCome, endShiftLine, waveKeysAt } from './engine/tonight.js';
 import { sunElevation } from './ui/dom.js';
 import { glance } from './ui/glance.js';
 import { detail } from './ui/detail.js';
 import { why } from './ui/why.js';
+import { tonightSheet } from './ui/tonight.js';
 import { log } from './ui/log.js';
 import { settings } from './ui/settings.js';
 import { firstrun } from './ui/firstrun.js';
@@ -27,7 +29,7 @@ import { checkRows, reportText } from './engine/phonecheck.js';
 import { drawDetailMap } from './ui/map.js';
 import { nextHeading } from './engine/heading.js';
 import { motionFlags, renderState, continueFlags, motionStyle } from './ui/motion.js';
-import { fetchWeather } from './platform/weather.js';
+import { fetchWeather, packForecast, unpackForecast } from './platform/weather.js';
 import { liveItems } from './platform/relay.js';
 
 const OCB = [-6.2592, 53.3472]; // O'Connell Bridge: the reference point when location is off
@@ -50,8 +52,25 @@ const S = {
   shifts: [], shift: null, shiftAnchor: null, shiftSeenAt: null, shiftView: null, shiftDue: null, // ADR 0010
   heading: null, mapView: 'kerb', // the rank map (ADR 0011): your heading, in memory only; Kerb or Area for the session
   why: null, renderedWhy: null, // "Why this rank?" (ADR 0013): {id} of the stand the open sheet explains
+  tonight: null, renderedTonight: false, forecast: null, planOpens: [], tonightCard: null, toCome: null, // "Tonight" (ADR 0015)
 };
 let worker = null, workerReady = false, workerFailed = false, loc = null, weatherAt = -Infinity, relayAt = -Infinity;
+// A sheet's Close goes Back through history, which lands later: a sheet opened in between waits for it, or that late
+// Back would close the new one (plan review C2). Cleared by the popstate, or after a second if none comes.
+let backPending = false, reopen = null, backTimer = null;
+function sheetBack() {
+  backPending = true;
+  clearTimeout(backTimer);
+  backTimer = setTimeout(() => { if (backPending) settleBack(); }, 1000);
+  history.back();
+}
+function settleBack() {
+  backPending = false;
+  clearTimeout(backTimer);
+  const f = reopen;
+  reopen = null;
+  if (f) f();
+}
 const hooks = { afterRender: [] };
 
 const from = () => (S.fix ? [S.fix.lon, S.fix.lat] : OCB);
@@ -62,6 +81,14 @@ function shutWhy() {
   S.why = null;
   render();
   if (!focusTest('why-open')) focusTest('rec-name');
+}
+
+/** Closes "Tonight" (ADR 0015) and gives focus back to what opened it: the off-shift card or the next-hour line. */
+function shutTonight() {
+  const opener = S.tonight ? S.tonight.from : null;
+  S.tonight = null;
+  render();
+  if (!(opener && focusTest(opener))) focusTest('rec-name');
 }
 
 function fallbackKm(p) {
@@ -98,10 +125,22 @@ function recompute() {
   S.timetable = timetableStatus(S.now, S.ctx);
   S.eventsStale = daysBetween(S.data.meta.events.updated, dublinParts(S.now).date) > S.data.params.legal.events_stale_days;
   S.usableIds = new Set(S.data.stands.filter((s) => s.line && isUsable(status(s, S.now, S.ctx))).map((s) => s.id));
+  // ADR 0015: off shift, the line into "Tonight"; on shift, what is still to come for End shift (never from the first
+  // fatigue mark). A model that can't be built costs these two lines, never the glance (plan review C3).
+  S.tonightCard = null;
+  S.toCome = null;
+  try {
+    if (!S.shift) S.tonightCard = tonightCard(S.ctx, S.now, S.forecast); // rows and rain only: cheap on every tick (review I3)
+    else if (endShiftLine(S.ctx, S.now, S.data.params, onShiftMinutes(S.shifts, S.now.getTime(), S.data.params.shift.fatigue_window_h))) {
+      S.toCome = stillToCome(S.ctx, S.now, S.data.params);
+    }
+  } catch (e) {
+    setTimeout(() => { throw e; });
+  }
   applyTheme();
 }
 
-function snapshot(id) {
+function snapshot(id, t = S.now) {
   const order = S.recs.map((r) => r.stand.id);
   const r = S.recs.find((x) => x.stand.id === id);
   const P = S.data.params.demand;
@@ -112,7 +151,8 @@ function snapshot(id) {
   const differs = !!m && !!m.nowId && m.nowId !== m.id && !(S.byId[m.id] && S.byId[m.nowId] && twins(S.byId[m.id], S.byId[m.nowId]));
   return { demand_score: d.score, demand_level: d.level, reason: d.reason, rank_order: order,
     pick_id: m ? m.id : null, pick_km: m ? m.km : null, pick_t: m ? m.t.toISOString() : null, now_pick_id: m ? m.nowId : null,
-    now_pick_differs: differs, drive_kmh: S.data.params.rank.drive_kmh };
+    now_pick_differs: differs, drive_kmh: S.data.params.rank.drive_kmh,
+    waves: S.byId[id] ? waveKeysAt(S.byId[id], new Date(t), S.ctx) : [] }; // ADR 0015: the waves this wait began inside
 }
 
 function loggerCtx() {
@@ -270,7 +310,14 @@ async function refreshWeather() {
   if (!weatherOn || !navigator.onLine) return;
   weatherAt = performance.now();
   const w = await fetchWeather((u) => fetch(u, { cache: 'no-store' }), clockNow());
-  if (w) { S.weather = w; recompute(); render(); }
+  if (!w) return;
+  S.weather = w;
+  if (w.steps && w.steps.length) { // ADR 0015: every step, kept on the phone so Tonight shows rain offline too
+    S.forecast = { steps: w.steps, issued: w.issued, fetched: w.fetched };
+    store.setSetting('forecast', packForecast(S.forecast));
+  }
+  recompute();
+  render();
 }
 
 async function refreshRelay() {
@@ -402,7 +449,8 @@ const A = {
   },
   async exportJSON() {
     const meta = { model: MODEL, params_version: S.data.params.version, bundle_version: S.data.meta.bundle_version, exported_at: at().toISOString() };
-    const how = await exportFile(`kerb-waits-${dublinParts(at()).date}.json`, toJSON({ events: S.events, waits: S.waits, meta, device: S.device, shifts: S.shifts }), 'application/json');
+    const how = await exportFile(`kerb-waits-${dublinParts(at()).date}.json`,
+      toJSON({ events: S.events, waits: S.waits, meta, device: S.device, shifts: S.shifts, planOpens: S.planOpens }), 'application/json');
     if (how !== 'cancelled') { S.lastBackup = at().toISOString(); store.setSetting('lastBackup', S.lastBackup); render(); }
   },
   async restore(file) { // ADR 0008: add the backup's events this phone doesn't have; the same file twice changes nothing
@@ -412,6 +460,8 @@ const A = {
     try { b = parseBackup(await file.text()); } catch (e) {
       S.restoreMsg = "This isn't a Kerb backup file. Nothing was changed."; render(); return;
     }
+    const opens = mergeOpens(S.planOpens, b.planOpens); // ADR 0015: before "Nothing new", so a backup's openings still come in
+    if (opens.length !== S.planOpens.length) { S.planOpens = opens; store.setSetting('planOpens', S.planOpens); }
     const wasEmpty = !hasOwnLog(S.events), before = S.waits.length; // shift events alone aren't a log (ADR 0010)
     const m = mergeEvents(S.events, b.events, { localDevice: S.device, fileDevice: b.device });
     // a wait left open in the backup (taken mid-wait) is closed at its last sighting, not resumed weeks later
@@ -435,7 +485,9 @@ const A = {
   openWhy(id) {
     const target = id || (S.recs[0] && S.recs[0].stand.id);
     if (!target) return;
-    if (!S.why) history.pushState({ kerbWhy: 1 }, '');
+    if (backPending) { reopen = () => A.openWhy(id); return; } // the Back of a sheet just closed hasn't landed yet
+    if (S.tonight) { S.tonight = null; history.replaceState({ kerbWhy: 1 }, ''); } // one sheet at a time, one history entry
+    else if (!S.why) history.pushState({ kerbWhy: 1 }, '');
     S.why = { id: target };
     S.scroll[`why:${target}`] = 0;
     render();
@@ -443,8 +495,26 @@ const A = {
   },
   closeWhy() {
     if (!S.why) return;
-    if (history.state && history.state.kerbWhy) history.back(); // its popstate finds the sheet already shut
+    if (history.state && history.state.kerbWhy) sheetBack(); // its popstate finds the sheet already shut
     shutWhy();
+  },
+  // ADR 0015: "Tonight" opens from the off-shift card or the next-hour line; Back, Escape and the backdrop close it
+  openTonight(from = 'next-hour') {
+    if (backPending) { reopen = () => A.openTonight(from); return; }
+    if (S.why) { S.why = null; history.replaceState({ kerbTonight: 1 }, ''); }
+    else if (!S.tonight) history.pushState({ kerbTonight: 1 }, '');
+    S.tonight = { from };
+    S.scroll.tonight = 0;
+    // each opening is kept for the kill criterion (settings, not the event log: shifts and waits read every event)
+    S.planOpens = [...S.planOpens, { t: clockNow().toISOString(), on_shift: !!S.shift }].slice(-2000);
+    store.setSetting('planOpens', S.planOpens);
+    render();
+    if (!focusTest('tonight-close')) focusTest(from);
+  },
+  closeTonight() {
+    if (!S.tonight) return;
+    if (history.state && history.state.kerbTonight) sheetBack();
+    shutTonight();
   },
 };
 
@@ -475,13 +545,21 @@ function render() {
     // a sheet that can't be built (e.g. data without params.explain) shuts and reports itself; the glance keeps updating
     try { sheet = why(S, A, from()); } catch (e) {
       S.why = null;
-      if (history.state && history.state.kerbWhy) history.back();
+      if (history.state && history.state.kerbWhy) sheetBack();
+      setTimeout(() => { throw e; });
+    }
+  } else if (S.tonight && S.view === 'glance' && !S.firstRun) { // ADR 0015: the same way, one sheet at a time
+    try { sheet = tonightSheet(S, A); } catch (e) {
+      S.tonight = null;
+      if (history.state && history.state.kerbTonight) sheetBack();
       setTimeout(() => { throw e; });
     }
   }
   if (sheet) for (const el of view) el.inert = true;
   const whyBody = root.querySelector('[data-test=why-body]');
   if (whyBody && S.renderedWhy) S.scroll[`why:${S.renderedWhy}`] = whyBody.scrollTop;
+  const tnBody = root.querySelector('[data-test=tonight-body]');
+  if (tnBody && S.renderedTonight) S.scroll.tonight = tnBody.scrollTop;
   // ADR 0009: animate only what changed since the last render; a render mid-animation continues it from where it was
   const seen = renderState(S, viewKey()), t = performance.now();
   S.motion = continueFlags(S.motion, motionFlags(S.lastRender, seen), t);
@@ -491,8 +569,10 @@ function render() {
   S.lastRender = seen;
   root.replaceChildren(...view, ...(S.firstRun ? [firstrun(A)] : []), ...(sheet ? [sheet] : []));
   S.renderedView = viewKey();
-  S.renderedWhy = sheet ? S.why.id : null;
-  if (sheet) { const b = sheet.querySelector('[data-test=why-body]'); b.scrollTop = S.scroll[`why:${S.why.id}`] || 0; }
+  S.renderedWhy = sheet && S.why ? S.why.id : null;
+  S.renderedTonight = !!(sheet && S.tonight);
+  if (sheet && S.why) { const b = sheet.querySelector('[data-test=why-body]'); b.scrollTop = S.scroll[`why:${S.why.id}`] || 0; }
+  if (sheet && S.tonight) { const b = sheet.querySelector('[data-test=tonight-body]'); b.scrollTop = S.scroll.tonight || 0; }
   const after = root.querySelector(':scope > main');
   if (after && S.scroll[S.renderedView]) after.scrollTop = S.scroll[S.renderedView];
   S.changed = false;
@@ -520,6 +600,8 @@ async function boot() {
   S.device = saved.device || (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
   if (!saved.device) store.setSetting('device', S.device);
   S.lastBackup = saved.lastBackup || saved.lastExport || null; // lastExport: the name before ADR 0008
+  S.forecast = unpackForecast(saved.forecast); // ADR 0015: the last forecast, for Tonight offline (null if unreadable)
+  S.planOpens = Array.isArray(saved.planOpens) ? saved.planOpens.filter((o) => o && typeof o.t === 'string') : [];
   // Phone check: remember that Kerb has started with no signal (the offline test a driver does in aeroplane mode)
   S.offlineBootAt = navigator.onLine ? saved.offlineBootAt || null : clockNow().toISOString();
   if (!navigator.onLine) store.setSetting('offlineBootAt', S.offlineBootAt);
@@ -539,10 +621,17 @@ async function boot() {
   addEventListener('pageshow', (e) => { if (e.persisted) onResume(); });
   addEventListener('online', () => { S.online = true; render(); });
   addEventListener('offline', () => { S.online = false; render(); });
-  // ADR 0013: the phone's Back and Escape close "Why this rank?"; a sheet left open by a reload leaves no live entry
-  if (history.state && history.state.kerbWhy) history.replaceState(null, '');
-  addEventListener('popstate', () => { if (S.why) shutWhy(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.why) { e.preventDefault(); A.closeWhy(); } });
+  // ADR 0013/0015: the phone's Back and Escape close the open sheet; a sheet left open by a reload leaves no live entry
+  if (history.state && (history.state.kerbWhy || history.state.kerbTonight)) history.replaceState(null, '');
+  addEventListener('popstate', () => {
+    if (backPending) { settleBack(); return; } // the Back a Close asked for: the sheet is already shut
+    if (S.why) shutWhy(); else if (S.tonight) shutTonight();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !(S.why || S.tonight)) return;
+    e.preventDefault();
+    if (S.why) A.closeWhy(); else A.closeTonight();
+  });
   applyAwake();
   recompute();
   render();

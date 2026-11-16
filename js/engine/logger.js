@@ -77,7 +77,7 @@ function cabsEst(stand, z, fix, L) {
 
 function joinEvent(state, input, ctx, extra = {}) {
   const stand = input.stand || state.stand;
-  const shown = ctx.shown(stand);
+  const shown = ctx.shown(stand, input.t); // ADR 0015: the snapshot is for the join's own time (an automatic one is backdated)
   const assisted = state.mode === 'prompt' && (!input.stand || input.stand === state.stand);
   return { type: 'join', t: iso(input.t), stand, source: extra.source || (assisted ? 'assist' : 'manual'), shown, versions: ctx.versions,
     gps_accuracy_m: state.lastFix ? state.lastFix.accuracy ?? null : null,
@@ -317,7 +317,7 @@ export function step(state, input, ctx) {
       const det = detectStand(state.lastFix, input.t, ctx);
       const observed = state.dwell && state.dwell.stand === det.stand && !state.dwell.startUncertain;
       const t = ctx.auto && det.stand && observed ? state.dwell.since : input.t; // Auto "Start now" keeps the first minute
-      const shown = det.stand ? ctx.shown(det.stand) : null;
+      const shown = det.stand ? ctx.shown(det.stand, t) : null;
       const ev = { type: 'join', t: iso(t), stand: det.stand, source: 'start', detect: det.detect,
         ...(det.detect_m != null ? { detect_m: det.detect_m } : {}), ...(det.detect === 'none' ? { near: det.near } : {}),
         shown, versions: ctx.versions, gps_accuracy_m: state.lastFix ? state.lastFix.accuracy ?? null : null,

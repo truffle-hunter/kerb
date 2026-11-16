@@ -3,6 +3,7 @@ import { h, iconButton } from './dom.js';
 import { computeStats } from '../engine/stats.js';
 import { dublinTime, hhmm } from '../engine/time.js';
 import { onShiftMinutes, fatigueStage } from '../engine/shift.js';
+import { wavesSplit } from '../engine/tonight.js';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -51,9 +52,20 @@ export function stats(S, A, parts) {
       h('span', { class: 'bandbar', role: 'img', 'aria-label': b.n ? `${b.band}: ${fmtMin(b.median)} over ${plural(b.n, 'wait')}` : `${b.band}: no waits` },
         h('i', { style: `width:${b.n ? Math.max(4, (100 * b.median) / maxBand) : 0}%` })),
       h('span', { class: 'bandval' }, b.n ? `${fmtMin(b.median)} (${b.n})` : '–')))),
+    ...(wavesLine(S) || []), // h() flattens one level only
     h('h3', {}, 'All waits'),
     h('p', {}, `${plural(st.total, 'wait')} logged, usually ${fmtMin(st.overallMedian)} at the rank; ${plural(st.fares, 'fare')} of ${st.answered} answered.`
       + (st.unconfirmed ? ` ${st.unconfirmed} logged automatically and not yet confirmed: open the Log to confirm or delete them.` : '')),
     ] : null,
     h('p', { class: 'note' }, 'These are your past waits. They are not a forecast.'))];
+}
+
+/** ADR 0015: his waits that began during a big let-out or closing time against the rest, past tense with counts. Only
+ * waits logged since Tonight carry the waves, so older ones are left out; nothing under 3 waits in all. */
+function wavesLine(S) {
+  const ws = wavesSplit(S.waits, S.data.params);
+  if (ws.during.n + ws.other.n < 3) return null;
+  const part = (x) => (x.n ? `${plural(x.n, 'wait')}, usually ${fmtMin(x.median)}, ${plural(x.fares, 'fare')}` : 'none yet');
+  return [h('h3', {}, 'Let-outs and closing time'),
+    h('p', { 'data-test': 'stats-waves' }, `During big let-outs and closing time: ${part(ws.during)}. At other times: ${part(ws.other)}.`)];
 }

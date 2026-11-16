@@ -113,9 +113,29 @@ function restBlock(S, A) {
     S.recs.slice(1).map((r) => h('button', { class: 'alt', 'data-test': 'alt', 'data-stand': r.stand.id, onclick: () => A.detail(r.stand.id) },
       h('span', {}, r.stand.name), h('span', { class: 'km' }, fmtKm(r.km, r.approx)), h('span', { class: 'lvl' }, r.demand.level),
       hist(S, r.stand.id, 'althist', 'alt-history'))),
-    h('p', { class: 'next', 'data-test': 'next-hour' }, !S.timetable.current
-      ? `Timetables out of date (they ran to ${shortDate(S.timetable.to)}): trains, trams and ferries not shown`
-      : next ? ['Next hour: ', h('b', {}, next.label)] : 'Nothing scheduled in the next hour'));
+    nextHour(S, A, next));
+}
+
+/** Off shift (ADR 0015): the way into "Tonight", a quiet line with an underlined cue, like "Why?", on the off-shift bar
+ * above Start shift (at 360x640 the glance has no room under a shift summary). Absent while the first-run sheet shows,
+ * or when the model couldn't be built. */
+function tonightCard(S, A) {
+  if (S.shift || S.firstRun || !S.tonightCard) return null;
+  return h('button', { class: 'tonightopen', type: 'button', 'data-test': 'tonight-card', 'aria-haspopup': 'dialog',
+    'aria-label': `${S.tonightCard}. Open the night ahead`, onclick: () => A.openTonight('tonight-card') },
+  h('span', { class: 'whycue' }, 'Tonight'), S.tonightCard.replace(/^Tonight/, ''));
+}
+
+/** The next hour. On shift it is also the way into "Tonight" (ADR 0015): the same words, then a quiet "Tonight" cue. */
+function nextHour(S, A, next) {
+  const words = !S.timetable.current
+    ? `Timetables out of date (they ran to ${shortDate(S.timetable.to)}): trains, trams and ferries not shown`
+    : next ? ['Next hour: ', h('b', {}, next.label)] : 'Nothing scheduled in the next hour';
+  if (!S.shift || S.firstRun) return h('p', { class: 'next', 'data-test': 'next-hour' }, words);
+  const plain = Array.isArray(words) ? `Next hour: ${next.label}` : words;
+  return h('button', { class: 'next nextopen', type: 'button', 'data-test': 'next-hour', 'aria-haspopup': 'dialog',
+    'aria-label': `${plain}. Tonight: the night ahead`, onclick: () => A.openTonight('next-hour') },
+  words, ' · ', h('span', { class: 'whycue', 'data-test': 'tonight-cue' }, 'Tonight'));
 }
 
 function standName(S, id) { if (id == null) return "rank not on Kerb's list"; const s = S.byId[id]; return s ? s.name : id; }
@@ -202,6 +222,10 @@ function idleBar(S, A) {
 function endShiftBar(S, A) {
   return h('footer', { class: 'bar idle shiftbar', 'data-test': 'shift-bar' },
     h('p', { class: 'q timerstatus', 'data-test': 'shift-status' }, `On shift since ${hhmm(new Date(S.shift.start))} · ${hm(minsOn(S))}`),
+    // ADR 0015: what is still to come in the next 3 hours, never from the first fatigue mark (S.toCome is null then);
+    // each item stays whole and the line wraps between them
+    S.toCome && S.toCome.length ? h('p', { class: 'q tocome', 'data-test': 'shift-tocome' }, 'Still to come: ',
+      S.toCome.flatMap((r, i) => [i ? ' · ' : null, h('span', { class: 'tcitem' }, r.short)])) : null,
     h('button', { class: 'btn', 'data-test': 'btn-shift-end', onclick: A.endShift }, 'End shift'),
     quiet(h('button', { class: 'btn quiet', 'data-test': 'btn-shift-keep', onclick: A.keepGoing }, 'Keep going')));
 }
@@ -225,6 +249,7 @@ function offShiftBar(S, A) {
   const canResume = ended && S.now - Date.parse(last.end) <= P.resume_max_min * 60000;
   return h('footer', { class: 'bar idle shiftbar', 'data-test': ended ? 'ended-bar' : 'offshift-bar' },
     h('p', { class: 'q timerstatus', 'data-test': 'shift-status' }, line),
+    tonightCard(S, A),
     h('button', { class: 'btn primary big', 'data-test': 'btn-shift-start', onclick: () => A.startShift(atRank ? 'rank_prompt' : 'tap') }, 'Start shift'),
     canResume ? quiet(h('button', { class: 'btn quiet', 'data-test': 'btn-shift-resume', onclick: A.resumeShift }, 'Still on shift')) : null,
     reminders(S, A));

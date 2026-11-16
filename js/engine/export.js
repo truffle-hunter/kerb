@@ -3,10 +3,12 @@
 import { serviceDate } from './stats.js';
 export const CSV_HEADER = 'stand,joined_at,ended_at,wait_min,outcome,censored,followed_top_pick,join_source,cabs_ahead,people,demand_level,demand_score,model,params,bundle,confirmed,creeps,left_via,cabs_ahead_est,detect,off_shift';
 
-export function toJSON({ events, waits, meta, device, shifts = [] }) {
+export function toJSON({ events, waits, meta, device, shifts = [], planOpens = [] }) {
   // features tells readers this export may hold unconfirmed automatic waits and review edits (ADR 0005), and shifts
   // with waits marked off_shift (ADR 0010; the shifts are also derivable from the events)
-  return JSON.stringify({ schema: 'kerb-log/1', device, meta: { ...meta, features: ['auto_join', 'review', 'shifts'] }, events, waits, shifts }, null, 1);
+  // and the times the Tonight sheet was opened (ADR 0015: kept in settings, not the event log, so no shift or wait reads them)
+  return JSON.stringify({ schema: 'kerb-log/1', device, meta: { ...meta, features: ['auto_join', 'review', 'shifts', 'plan_opens'] }, events, waits, shifts,
+    plan_opens: planOpens }, null, 1);
 }
 
 const cell = (v) => {

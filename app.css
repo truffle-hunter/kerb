@@ -293,3 +293,38 @@ textarea.report { font: inherit; font-size: var(--t0); line-height: var(--lh0); 
 .whyrow .bandbar { display: block; }
 .a-why > .overlay.why { animation: k-fade var(--d1) var(--ease-in) var(--a-why, 0ms); }
 .a-why > .overlay.why .card { animation: k-sheet var(--d2) var(--ease-in) var(--a-why, 0ms); }
+
+/* "Tonight" (ADR 0015): the ways in are quiet lines with an underlined cue, like "Why?"; the sheet reuses the Why sheet.
+   Rows: the clock in a tabular column, a dot sized by the wave's strength (size, never colour alone: the words carry it). */
+.tonightopen { all: unset; box-sizing: border-box; display: block; width: 100%; min-height: var(--h-quiet); cursor: pointer; text-align: left;
+  font-size: var(--t05); line-height: var(--lh1); color: var(--ink); border-radius: var(--radius-s); }
+.nextopen { all: unset; box-sizing: border-box; display: block; width: 100%; min-height: var(--h-quiet); cursor: pointer; text-align: left;
+  margin: var(--s3) 0 0; font-size: var(--t1); line-height: var(--lh1); color: var(--ink); border-radius: var(--radius-s); }
+.tonightopen:focus-visible, .nextopen:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.nextopen .whycue { font-size: var(--t05); }
+.bar.shiftbar > .tonightopen { grid-column: 1 / -1; }
+.bar.shiftbar > .q.tocome { grid-column: 1 / -1; font-size: var(--t0); line-height: var(--lh0); color: var(--ink-dim); }
+.tcitem { display: inline-block; max-width: 100%; }
+.tnrows, .tnweeks { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s2); }
+.tnrow { display: grid; grid-template-columns: 6.4rem 16px minmax(0, 1fr); column-gap: var(--s3); align-items: baseline; }
+.tnbody .tnrow, .tnbody .tnrow .note { line-height: var(--lh05); }
+.tntime { font-variant-numeric: tabular-nums; font-size: var(--t0); color: var(--ink-dim); white-space: nowrap; }
+.tntitle { overflow-wrap: anywhere; }
+.tnrec { grid-column: 3; }
+.tnrow.quiet .tntitle { color: var(--ink-dim); }
+/* the dot sits on the title's first line: a cell one line high, the dot centred in it */
+.tndot { align-self: start; display: grid; place-items: center; width: 16px; height: calc(var(--lh05) * 1em); }
+.tndot::before { content: ""; display: block; border-radius: 50%; background: var(--accent); }
+.tndot.large::before { width: 16px; height: 16px; }
+.tndot.medium::before { width: 11px; height: 11px; }
+.tndot.small::before { width: 7px; height: 7px; }
+.tndot.ring::before { width: 7px; height: 7px; background: transparent; border: 1.5px solid var(--line-strong); }
+.tndot.none::before { display: none; }
+.tnfacts { display: grid; gap: var(--s2); margin: 0; }
+.tnfact dt { color: var(--ink-dim); font-size: var(--t0); }
+.tnfact dd { margin: 0; }
+.tnweek { display: grid; grid-template-columns: minmax(0, 1fr); padding-left: var(--s3); border-left: 3px solid transparent; }
+.tnweek.out { border-left-color: var(--accent); }
+.tnday { font-weight: var(--w-bold); }
+.tnwhat { overflow-wrap: anywhere; }
+/* The sheet is also .overlay.why, so it opens with the Why sheet's motion (no new flag). */

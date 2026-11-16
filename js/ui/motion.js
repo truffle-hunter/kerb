@@ -14,7 +14,7 @@ export function renderState(S, view) {
     updateReady: !!S.updateReady,
     recChanged: !!S.changed,
     mapView: S.mapView || 'kerb', // the rank map's Kerb / Area view (ADR 0011)
-    why: !!S.why, // the "Why this rank?" sheet is open (ADR 0013)
+    why: !!S.why || !!S.tonight, // a sheet is open: "Why this rank?" (ADR 0013) or "Tonight" (ADR 0015), which opens the same way
   };
 }
 
