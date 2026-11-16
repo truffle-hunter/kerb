@@ -4,6 +4,7 @@
 import { h } from './dom.js';
 import { tonightModel, dayLabel } from '../engine/tonight.js';
 import { rowDetail } from '../engine/tonightwhy.js';
+import { longModel } from '../engine/longruns.js';
 import { hhmm } from '../engine/time.js';
 
 const clock = (r) => (r.n === 1 ? `${r.approx ? '~' : ''}${hhmm(r.from)}` : `${hhmm(r.from)}–${hhmm(r.to)}`);
@@ -57,6 +58,56 @@ function detailOf(S) {
   return memoRow.detail;
 }
 
+// ADR 0017: Long runs adds the permit, whether there is a real fix (no "Nearest" from O'Connell Bridge; plan review I2)
+// and the road distances object, by identity, to the memo key.
+let memoLong = { key: null, km: null, model: null };
+function longOf(S) {
+  const kmById = S.fix ? S.km : null;
+  const key = `${baseKey(S)}|${!!S.settings.permit}|${!!kmById}`;
+  if (memoLong.key !== key || memoLong.km !== kmById) {
+    memoLong = { key, km: kmById, model: longModel({ ctx: S.ctx, now: S.now, permit: !!S.settings.permit, kmById, waits: S.waits }) };
+  }
+  return memoLong.model;
+}
+
+const longEntry = (e) => h('li', { class: 'lrentry', 'data-test': 'long-entry', 'data-key': e.key },
+  h('p', { class: 'lrhead' }, h('b', {}, e.name), ` · ${e.when} · Demand likely: `, h('b', {}, e.level)),
+  e.places ? h('p', { class: 'lrplaces' }, e.places) : null,
+  e.nearest ? h('p', { class: 'note lrnear' }, e.nearest) : null,
+  h('p', { class: 'lrtext' }, e.text),
+  e.record ? h('p', { class: 'note lrrec', 'data-test': 'long-record' }, e.record) : null);
+
+/** Long runs (ADR 0017): where a long fare is more likely, in the card where the list was. "Back to tonight" is the only
+ * button; every way back steps one level. The entries are not buttons and have no Go. */
+function longSheet(S, A) {
+  const m = longOf(S);
+  const body = [
+    // the places first; what "long" means and the meter's step come after them, once (ruling: the answer reads first)
+    h('p', { class: 'note', 'data-test': 'long-sub' }, m.sub),
+    m.stale ? h('p', { class: 'warn', 'data-test': 'long-stale' }, m.stale) : null,
+    h('h3', {}, 'Now'),
+    m.now.length ? h('ul', { class: 'lrlist', 'data-test': 'long-now' }, m.now.map(longEntry))
+      : h('p', { 'data-test': 'long-empty' }, m.empty),
+    m.later.length ? [h('h3', {}, 'Later'), h('ul', { class: 'lrlist', 'data-test': 'long-later' }, m.later.map(longEntry))] : null,
+    h('h3', {}, 'Why length matters'),
+    h('p', { class: 'note', 'data-test': 'long-means' }, m.means),
+    h('p', { class: 'note', 'data-test': 'long-tariff' }, m.tariff),
+    h('p', { class: 'note', 'data-test': 'long-footer' }, m.footer),
+    h('p', { class: 'note', 'data-test': 'long-honest' }, m.honest),
+  ];
+  return h('div', { class: 'overlay why tonight', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'tonight-title', 'data-test': 'tonight-sheet',
+    onclick: (ev) => { if (ev.target === ev.currentTarget) A.closeLong(); } }, // the backdrop steps back one level too
+  h('div', { class: 'card', 'data-test': 'long-card' },
+    h('h2', { id: 'tonight-title' }, m.title),
+    h('div', { class: 'whybody tnbody lrbody', 'data-test': 'long-body' }, body.flat(Infinity)),
+    h('button', { class: 'btn big', type: 'button', 'data-test': 'tonight-back', onclick: () => A.closeLong() }, 'Back to tonight')));
+}
+
+/** The way into Long runs (ADR 0017): one quiet full-width button under the rows, with rows or without (plan review I8). */
+const longButton = (A) => h('button', { class: 'tnopen tnlong', type: 'button', 'data-test': 'tonight-long-open',
+  'aria-label': "Long runs: where they're more likely", onclick: () => A.openLong() },
+h('span', { class: 'tntitle' }, h('span', { class: 'whycue' }, 'Long runs'), ": where they're more likely"));
+
 // A timetable line "HH:MM label · rank" sits in the list's clock column with the rank under it; a source line is a note.
 const TIMED = /^(\d\d:\d\d) (.+?)(?: · (.+))?$/;
 const line = (l, note) => {
@@ -94,12 +145,14 @@ function detailSheet(S, A) {
 /** The sheet: the list, or a row's detail. It survives re-renders on every fix and tick and keeps its scroll (main.js). */
 export function tonightSheet(S, A) {
   if (S.tonight && S.tonight.row) return detailSheet(S, A);
+  if (S.tonight && S.tonight.long) return longSheet(S, A);
   const m = model(S);
   const body = [
     m.timetable.current ? null : h('p', { class: 'warn', 'data-test': 'tonight-stale' },
       `Timetables out of date (they ran to ${m.timetable.to ? dayLabel(m.timetable.to) : 'an earlier date'}): trains, trams and ferries not shown`),
     m.entries.length ? h('ol', { class: 'tnrows' }, m.entries.map((e) => (e.type === 'quiet' ? quietRow(e, A) : waveRow(e, A))))
       : h('p', {}, 'Nothing scheduled for the rest of the night.'),
+    longButton(A), // ADR 0017
     h('p', { class: 'tnrain', 'data-test': 'tonight-rain' }, m.rain),
     h('dl', { class: 'tnfacts' },
       fact('Cabs out (NTA 2026 survey, not live)', m.cabs, 'tonight-cabs'),

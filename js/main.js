@@ -14,6 +14,7 @@ import { deriveShifts, currentShift, activityOf, lastActivity, shiftDue, tagWait
 import { toJSON, toCSV } from './engine/export.js';
 import { parseBackup, mergeEvents, closeDanglingWaits, closeDanglingShifts, hasOwnLog, mergeOpens } from './engine/backup.js';
 import { tonightCard, stillToCome, endShiftLine, waveKeysAt } from './engine/tonight.js';
+import { longKindsAt, tripAsk } from './engine/longruns.js';
 import { sunElevation } from './ui/dom.js';
 import { glance } from './ui/glance.js';
 import { detail } from './ui/detail.js';
@@ -53,6 +54,7 @@ const S = {
   heading: null, mapView: 'kerb', // the rank map (ADR 0011): your heading, in memory only; Kerb or Area for the session
   why: null, renderedWhy: null, // "Why this rank?" (ADR 0013): {id} of the stand the open sheet explains
   tonight: null, renderedTonight: false, forecast: null, planOpens: [], tonightCard: null, toCome: null, // "Tonight" (ADR 0015)
+  tripAsk: null, // ADR 0017: the fare the wait bar asks "long run (10 km+)?" about
 };
 let worker = null, workerReady = false, workerFailed = false, loc = null, weatherAt = -Infinity, relayAt = -Infinity;
 // A sheet's Close goes Back through history, which lands later: a sheet opened in between waits for it, or that late
@@ -101,6 +103,14 @@ function shutTonightRow() {
   if (el) el.focus(); else focusTest('tonight-close');
 }
 
+/** Steps Long runs back to Tonight's list (ADR 0017) and gives focus back to its button. */
+function shutLong() {
+  if (!S.tonight || !S.tonight.long) return;
+  S.tonight = { ...S.tonight, long: false };
+  render();
+  if (!focusTest('tonight-long-open')) focusTest('tonight-close');
+}
+
 function fallbackKm(p) {
   const km = {};
   for (const s of S.data.stands) if (s.recommendable) km[s.id] = { km: (distM(p, s.head) * 1.3) / 1000, approx: true };
@@ -147,6 +157,7 @@ function recompute() {
   } catch (e) {
     setTimeout(() => { throw e; });
   }
+  refreshTrip(); // ADR 0017: a fare's question expires 6 hours after it, on the minute tick
   applyTheme();
 }
 
@@ -159,10 +170,13 @@ function snapshot(id, t = S.now) {
   // guess in force, so realised speed and the effect can be measured from the log (twins count as the same place)
   const m = S.pick && S.pick.memo;
   const differs = !!m && !!m.nowId && m.nowId !== m.id && !(S.byId[m.id] && S.byId[m.nowId] && twins(S.byId[m.id], S.byId[m.nowId]));
+  // ADR 0017: the Long runs kinds open at this stand then; a bug here must never cost the wait (plan review I6)
+  let long = [];
+  try { long = S.byId[id] ? longKindsAt(S.byId[id], new Date(t), S.ctx, !!S.settings.permit) : []; } catch (e) { setTimeout(() => { throw e; }); }
   return { demand_score: d.score, demand_level: d.level, reason: d.reason, rank_order: order,
     pick_id: m ? m.id : null, pick_km: m ? m.km : null, pick_t: m ? m.t.toISOString() : null, now_pick_id: m ? m.nowId : null,
     now_pick_differs: differs, drive_kmh: S.data.params.rank.drive_kmh,
-    waves: S.byId[id] ? waveKeysAt(S.byId[id], new Date(t), S.ctx) : [] }; // ADR 0015: the waves this wait began inside
+    waves: S.byId[id] ? waveKeysAt(S.byId[id], new Date(t), S.ctx) : [], long }; // ADR 0015: the waves this wait began inside
 }
 
 function loggerCtx() {
@@ -182,7 +196,7 @@ function feedLogger(input) {
     if (ev.type === 'join') { S.cabsAhead = null; S.openSource = ev.source; }
     if (ev.type === 'report') S.lastReport = { stand: ev.stand, cabsAhead: ev.cabsAhead, people: ev.people, t: new Date(ev.t) };
   }
-  if (r.events.length) refreshLog();
+  if (r.events.length) refreshLog(); else if (before.mode !== r.state.mode) refreshTrip();
   return r.events.length > 0 || before.mode !== r.state.mode || before.stand !== r.state.stand;
 }
 
@@ -196,6 +210,19 @@ function refreshLog() {
   S.shifts = deriveShifts(S.events);
   S.shift = currentShift(S.shifts);
   S.waits = tagWaits(deriveWaits(S.events), S.shifts);
+  refreshTrip();
+}
+
+/** ADR 0017: the fare the wait bar asks about ("long run (10 km+)?"), only while a wait runs (plan review I1). */
+function refreshTrip() {
+  const was = S.tripAsk;
+  S.tripAsk = null;
+  if (S.data && S.logger.mode === 'waiting') {
+    try { S.tripAsk = tripAsk(S.waits, S.logger.joinT, S.now, S.data.params); } catch (e) { setTimeout(() => { throw e; }); }
+  }
+  // final review C1: the question going (answered, or 6 hours on) shrinks the bar and puts "Not a rank wait" under the
+  // finger; that is a bar change, so a second tap within 600 ms is ignored like one after Start
+  if (was && !S.tripAsk) S.barChangedAt = performance.now();
 }
 
 // ---- Shifts (ADR 0010): one tap starts one; it ends by itself after the idle gap, backdated to the last sign of work.
@@ -427,6 +454,11 @@ const A = {
       if (t) { t.focus(); t.select(); }
     }
   },
+  trip(wait, long, source) { // ADR 0017: "long run (10 km+)?" for a fare, from the wait bar or the Log; the latest answer wins
+    record({ type: 'trip', t: at().toISOString(), wait, long: long === true, source });
+    refreshLog();
+    render();
+  },
   review(type, wait, field, value) { // Log review: confirm / edit / void a finished wait (append-only, ADR 0005)
     record({ type, t: at().toISOString(), wait, source: 'review', ...(field ? { field, value } : {}) });
     refreshLog();
@@ -473,6 +505,7 @@ const A = {
     const opens = mergeOpens(S.planOpens, b.planOpens); // ADR 0015: before "Nothing new", so a backup's openings still come in
     if (opens.length !== S.planOpens.length) { S.planOpens = opens; store.setSetting('planOpens', S.planOpens); }
     const wasEmpty = !hasOwnLog(S.events), before = S.waits.length; // shift events alone aren't a log (ADR 0010)
+    const trips = (evs) => evs.filter((e) => e.type === 'trip').length, tripsBefore = trips(S.events); // ADR 0017
     const m = mergeEvents(S.events, b.events, { localDevice: S.device, fileDevice: b.device });
     // a wait left open in the backup (taken mid-wait) is closed at its last sighting, not resumed weeks later
     m.events = closeDanglingShifts(closeDanglingWaits(m.events)); // and a shift left open before a later start ends (ADR 0010)
@@ -486,7 +519,9 @@ const A = {
     if (m.device && m.device !== S.device) { S.device = m.device; store.setSetting('device', S.device); }
     if (wasEmpty && b.exportedAt) { S.lastBackup = b.exportedAt; store.setSetting('lastBackup', S.lastBackup); } // it is in that file
     const added = S.waits.length - before, already = Math.max(0, deriveWaits(b.events).length - added);
-    S.restoreMsg = `Restored ${added} wait${added === 1 ? '' : 's'}${already ? ` (${already} ${already === 1 ? 'was' : 'were'} already here)` : ''}.`;
+    const answers = trips(S.events) - tripsBefore; // plan review I7: a backup that brings only answers says so
+    S.restoreMsg = !added && answers ? `Restored ${answers} answer${answers === 1 ? '' : 's'} about a fare's length.`
+      : `Restored ${added} wait${added === 1 ? '' : 's'}${already ? ` (${already} ${already === 1 ? 'was' : 'were'} already here)` : ''}.`;
     render();
   },
   async exportCSV() { await exportFile(`kerb-waits-${dublinParts(at()).date}.csv`, toCSV(S.waits), 'text/csv'); },
@@ -513,7 +548,7 @@ const A = {
     if (backPending) { reopen = () => A.openTonight(from); return; }
     if (S.why) { S.why = null; history.replaceState({ kerbTonight: 1 }, ''); }
     else if (!S.tonight) history.pushState({ kerbTonight: 1 }, '');
-    S.tonight = { from, row: null, rowTitle: null };
+    S.tonight = { from, row: null, rowTitle: null, long: false };
     S.scroll.tonight = 0;
     // each opening is kept for the kill criterion (settings, not the event log: shifts and waits read every event)
     S.planOpens = [...S.planOpens, { t: clockNow().toISOString(), on_shift: !!S.shift }].slice(-2000);
@@ -537,7 +572,7 @@ const A = {
     if (backPending) { reopen = () => A.openTonightRow(key, title, kind); return; }
     if (S.tonight.row) history.replaceState({ kerbTonight: 1, kerbRow: 1 }, '');
     else history.pushState({ kerbTonight: 1, kerbRow: 1 }, '');
-    S.tonight = { ...S.tonight, row: key, rowTitle: title };
+    S.tonight = { ...S.tonight, row: key, rowTitle: title, long: false };
     S.scroll[`tonight:${key}`] = 0;
     // each opening is kept for ADR 0016's kill criterion, apart from Tonight's own (they carry `why`)
     S.planOpens = [...S.planOpens, { t: clockNow().toISOString(), on_shift: !!S.shift, why: kind }].slice(-2000);
@@ -549,6 +584,24 @@ const A = {
     if (!S.tonight || !S.tonight.row) return;
     if (history.state && history.state.kerbRow) sheetBack(); // its popstate finds the detail already shut
     shutTonightRow();
+  },
+  // ADR 0017: the button under Tonight's rows drills the card into Long runs, one more history entry, as a row does
+  openLong() {
+    if (!S.tonight) return; // a tap deferred behind a Back that closed Tonight opens nothing
+    if (backPending) { reopen = () => A.openLong(); return; }
+    if (S.tonight.row || S.tonight.long) history.replaceState({ kerbTonight: 1, kerbLong: 1 }, '');
+    else history.pushState({ kerbTonight: 1, kerbLong: 1 }, '');
+    S.tonight = { ...S.tonight, row: null, rowTitle: null, long: true };
+    S.scroll['tonight:long'] = 0;
+    S.planOpens = [...S.planOpens, { t: clockNow().toISOString(), on_shift: !!S.shift, why: 'long' }].slice(-2000);
+    store.setSetting('planOpens', S.planOpens);
+    render();
+    focusTest('tonight-back');
+  },
+  closeLong() {
+    if (!S.tonight || !S.tonight.long) return;
+    if (history.state && history.state.kerbLong) sheetBack(); // its popstate finds the card already shut
+    shutLong();
   },
 };
 
@@ -585,9 +638,9 @@ function render() {
     }
   } else if (S.tonight && S.view === 'glance' && !S.firstRun) { // ADR 0015: the same way, one sheet at a time
     try { sheet = tonightSheet(S, A); } catch (e) {
-      if (S.tonight.row) { // plan review I4: a detail that can't be built steps back one level, to the list
-        S.tonight = { ...S.tonight, row: null, rowTitle: null };
-        if (history.state && history.state.kerbRow) sheetBack();
+      if (S.tonight.row || S.tonight.long) { // plan review I4: a detail (or Long runs) that can't be built steps back one level
+        S.tonight = { ...S.tonight, row: null, rowTitle: null, long: false };
+        if (history.state && (history.state.kerbRow || history.state.kerbLong)) sheetBack();
         try { sheet = tonightSheet(S, A); } catch (e2) { S.tonight = null; sheetBack(); }
       } else {
         S.tonight = null;
@@ -603,6 +656,8 @@ function render() {
   if (tnBody && S.renderedTonight === 'list') S.scroll.tonight = tnBody.scrollTop;
   const tdBody = root.querySelector('[data-test=tonight-detail-body]'); // ADR 0016: a row's detail keeps its own scroll
   if (tdBody && typeof S.renderedTonight === 'string' && S.renderedTonight.startsWith('row:')) S.scroll[`tonight:${S.renderedTonight.slice(4)}`] = tdBody.scrollTop;
+  const lgBody = root.querySelector('[data-test=long-body]'); // ADR 0017: Long runs keeps its own scroll
+  if (lgBody && S.renderedTonight === 'long') S.scroll['tonight:long'] = lgBody.scrollTop;
   // ADR 0009: animate only what changed since the last render; a render mid-animation continues it from where it was
   const seen = renderState(S, viewKey()), t = performance.now();
   S.motion = continueFlags(S.motion, motionFlags(S.lastRender, seen), t);
@@ -613,11 +668,11 @@ function render() {
   root.replaceChildren(...view, ...(S.firstRun ? [firstrun(A)] : []), ...(sheet ? [sheet] : []));
   S.renderedView = viewKey();
   S.renderedWhy = sheet && S.why ? S.why.id : null;
-  S.renderedTonight = sheet && S.tonight ? (S.tonight.row ? `row:${S.tonight.row}` : 'list') : false;
+  S.renderedTonight = sheet && S.tonight ? (S.tonight.row ? `row:${S.tonight.row}` : S.tonight.long ? 'long' : 'list') : false;
   if (sheet && S.why) { const b = sheet.querySelector('[data-test=why-body]'); b.scrollTop = S.scroll[`why:${S.why.id}`] || 0; }
   if (sheet && S.tonight) {
-    const b = sheet.querySelector(S.tonight.row ? '[data-test=tonight-detail-body]' : '[data-test=tonight-body]');
-    if (b) b.scrollTop = (S.tonight.row ? S.scroll[`tonight:${S.tonight.row}`] : S.scroll.tonight) || 0;
+    const b = sheet.querySelector(S.tonight.row ? '[data-test=tonight-detail-body]' : S.tonight.long ? '[data-test=long-body]' : '[data-test=tonight-body]');
+    if (b) b.scrollTop = (S.tonight.row ? S.scroll[`tonight:${S.tonight.row}`] : S.tonight.long ? S.scroll['tonight:long'] : S.scroll.tonight) || 0;
   }
   const after = root.querySelector(':scope > main');
   if (after && S.scroll[S.renderedView]) after.scrollTop = S.scroll[S.renderedView];
@@ -675,12 +730,13 @@ async function boot() {
   addEventListener('popstate', () => {
     if (backPending) { settleBack(); return; } // the Back a Close asked for: the sheet is already shut
     if (S.tonight && S.tonight.row) shutTonightRow(); // ADR 0016: Back steps out of a row's detail first
+    else if (S.tonight && S.tonight.long) shutLong(); // ADR 0017: and out of Long runs
     else if (S.why) shutWhy(); else if (S.tonight) shutTonight();
   });
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || !(S.why || S.tonight)) return;
     e.preventDefault();
-    if (S.why) A.closeWhy(); else if (S.tonight.row) A.closeTonightRow(); else A.closeTonight();
+    if (S.why) A.closeWhy(); else if (S.tonight.row) A.closeTonightRow(); else if (S.tonight.long) A.closeLong(); else A.closeTonight();
   });
   applyAwake();
   recompute();

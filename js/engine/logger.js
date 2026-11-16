@@ -436,6 +436,7 @@ export function deriveWaits(events) {
     if (!x) continue;
     if (e.type === 'void') voided.add(e.wait);
     else if (e.type === 'confirm') x.confirmed = true;
+    else if (e.type === 'trip') x.long = e.long === true; // ADR 0017: "long run (10 km+)?"; the latest answer wins, never confirms
     else if (e.type === 'edit') {
       x.confirmed = true;
       if (e.field === 'stand') x.stand = e.value;

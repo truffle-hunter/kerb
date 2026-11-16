@@ -340,3 +340,20 @@ textarea.report { font: inherit; font-size: var(--t0); line-height: var(--lh0); 
 .tndetail .tnsec p { overflow-wrap: anywhere; }
 .tndetail .tnline { display: grid; grid-template-columns: 3.2rem minmax(0, 1fr); column-gap: var(--s3); align-items: baseline; }
 .tndetail .tnwhere { display: block; }
+/* ADR 0017: Long runs. The way in is one full-width quiet row under Tonight's list; the card is the same sheet, drilled. */
+.tnopen.tnlong { grid-template-columns: minmax(0, 1fr); margin-top: var(--s2); }
+.lrlist { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s4); }
+.lrentry { display: grid; gap: var(--s1); padding-left: var(--s3); border-left: 3px solid var(--line-strong); }
+.lrentry p { margin: 0; overflow-wrap: anywhere; }
+.lrhead { line-height: var(--lh05); }
+.lrplaces { color: var(--ink); }
+.whybody .lrtext { font-size: var(--t0); line-height: var(--lh0); color: var(--ink-dim); } /* the reasons sit under the place, quieter */
+/* The wait bar's question about the last rank fare (ADR 0017): a quiet row under the rarer actions, never over Fare. */
+.bar > .tripask { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 0 var(--s2); align-items: center; }
+.tripask .q { font-size: var(--t0); line-height: var(--lh0); color: var(--ink-dim); }
+.tripask .btn.quiet { min-height: var(--h-quiet); }
+@media (min-height: 600px) {
+  .bar.asking { max-height: 61.8vh; max-height: 61.8dvh; }
+}
+.logrow .rowlong { grid-column: 1 / -1; color: var(--ink-dim); font-size: var(--t0); }
+.logrow .rowactions .note { align-self: center; }

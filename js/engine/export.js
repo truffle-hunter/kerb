@@ -1,7 +1,7 @@
 // Export of the wait log (spec §7.5): JSON schema kerb-log/1 (read by tools/score/score_waits.py) and a CSV of waits.
 // The JSON export is also the driver's backup (ADR 0008).
 import { serviceDate } from './stats.js';
-export const CSV_HEADER = 'stand,joined_at,ended_at,wait_min,outcome,censored,followed_top_pick,join_source,cabs_ahead,people,demand_level,demand_score,model,params,bundle,confirmed,creeps,left_via,cabs_ahead_est,detect,off_shift';
+export const CSV_HEADER = 'stand,joined_at,ended_at,wait_min,outcome,censored,followed_top_pick,join_source,cabs_ahead,people,demand_level,demand_score,model,params,bundle,confirmed,creeps,left_via,cabs_ahead_est,detect,off_shift,long'; // long: ADR 0017
 
 export function toJSON({ events, waits, meta, device, shifts = [], planOpens = [] }) {
   // features tells readers this export may hold unconfirmed automatic waits and review edits (ADR 0005), and shifts
@@ -21,7 +21,8 @@ export function toCSV(waits) {
   const rows = waits.map((w) => [w.stand, w.joined_at, w.ended_at, w.wait_min == null ? '' : w.wait_min.toFixed(2), w.outcome,
     w.censored, w.followed_top_pick, w.join_source, w.cabs_ahead, w.people, w.shown && w.shown.demand_level,
     w.shown && w.shown.demand_score, w.versions && w.versions.model, w.versions && w.versions.params,
-    w.versions && w.versions.bundle, w.confirmed !== false, w.creeps ?? 0, w.left_via, w.cabs_ahead_est, w.detect, w.off_shift === true].map(cell).join(','));
+    w.versions && w.versions.bundle, w.confirmed !== false, w.creeps ?? 0, w.left_via, w.cabs_ahead_est, w.detect, w.off_shift === true,
+    w.long === true ? 'yes' : w.long === false ? 'no' : ''].map(cell).join(',')); // long: ADR 0017
   return [CSV_HEADER, ...rows].join('\n') + '\n';
 }
 
@@ -38,7 +39,7 @@ export function backupDue(waits, lastBackup, now, { persisted = null, startHour 
   for (const w of waits) { const t = Date.parse(w.ended_at || w.joined_at); if (t > after && !offShift.has(w.joined_at)) changed.set(w.joined_at, t); }
   for (const e of events) {
     const t = Date.parse(e.t);
-    if (e.wait && !offShift.has(e.wait) && ['confirm', 'edit', 'void'].includes(e.type) && t > after) changed.set(e.wait, Math.min(changed.get(e.wait) ?? t, t));
+    if (e.wait && !offShift.has(e.wait) && ['confirm', 'edit', 'void', 'trip'].includes(e.type) && t > after) changed.set(e.wait, Math.min(changed.get(e.wait) ?? t, t));
   }
   if (!changed.size) return { due: false, days: 0, count: 0 };
   const oldest = Math.min(...changed.values());

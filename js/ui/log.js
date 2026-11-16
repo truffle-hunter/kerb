@@ -20,6 +20,9 @@ function nearbyStands(S, id, near) {
 function row(S, A, w, label) {
   const name = w.stand == null ? NOT_LISTED : S.byId[w.stand] ? S.byId[w.stand].name : w.stand;
   const near = nearbyStands(S, w.stand, w.near);
+  // ADR 0017: a rank fare logged by this release can be answered "long run (10 km+)?"; the latest answer wins
+  const askable = w.outcome === 'fare' && w.shown && Array.isArray(w.shown.long);
+  const answered = askable && typeof w.long === 'boolean';
   return h('div', { class: 'logrow', 'data-test': 'log-row' },
     h('span', {}, hhmm(new Date(w.joined_at))),
     h('span', {}, name, w.confirmed === false ? h('span', { class: 'badge' }, ' auto, unconfirmed') : null,
@@ -31,13 +34,19 @@ function row(S, A, w, label) {
       w.outcome === 'unknown' ? h('button', { class: 'btn small', 'data-test': 'row-fare', onclick: () => A.review('edit', w.joined_at, 'outcome', 'fare') }, 'Fare') : null,
       w.outcome === 'unknown' ? h('button', { class: 'btn small', 'data-test': 'row-left', onclick: () => A.review('edit', w.joined_at, 'outcome', 'left_empty') }, 'Left empty') : null,
       // an honest answer too: keeps the outcome unknown (censored) and takes it off the list to check
-      w.outcome === 'unknown' && !w.outcome_reviewed ? h('button', { class: 'btn small', 'data-test': 'row-dontknow', onclick: () => A.review('edit', w.joined_at, 'outcome', 'unknown') }, "Don't know") : null),
+      w.outcome === 'unknown' && !w.outcome_reviewed ? h('button', { class: 'btn small', 'data-test': 'row-dontknow', onclick: () => A.review('edit', w.joined_at, 'outcome', 'unknown') }, "Don't know") : null,
+      askable && !answered ? [h('span', { class: 'note' }, 'Long run (10 km+)?'),
+        h('button', { class: 'btn small', 'data-test': 'row-long-yes', onclick: () => A.trip(w.joined_at, true, 'review') }, 'Yes'),
+        h('button', { class: 'btn small', 'data-test': 'row-long-no', onclick: () => A.trip(w.joined_at, false, 'review') }, 'No')] : null),
+    answered ? h('span', { class: 'note rowlong', 'data-test': 'row-long' }, w.long ? 'Long run' : 'Not a long run') : null,
     // less common fixes stay folded away so the list reads quietly
     h('details', { class: 'rowedit' }, h('summary', {}, 'Edit'),
       h('div', { class: 'rowactions' },
       near.length ? h('select', { class: 'small', 'data-test': 'row-stand', 'aria-label': `Wrong stand for the wait at ${hhmm(new Date(w.joined_at))}?`,
         onchange: (e) => e.target.value && A.review('edit', w.joined_at, 'stand', e.target.value) },
       h('option', { value: '' }, w.stand == null ? 'Choose rank' : 'Wrong stand?'), near.map((s) => h('option', { value: s.id }, s.name))) : null,
+      answered ? h('button', { class: 'btn small', 'data-test': 'row-long-flip', onclick: () => A.trip(w.joined_at, !w.long, 'review') },
+        w.long ? 'Not a long run' : 'A long run') : null,
       h('button', { class: 'btn small', 'data-test': 'row-delete', onclick: () => A.review('void', w.joined_at) }, 'Not a rank wait'))));
 }
 

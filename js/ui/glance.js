@@ -158,7 +158,7 @@ export function loggerBar(S, A) {
     const name = standName(S, L.stand);
     const lead = src === 'start' ? (L.stand == null ? `Timing: ${name}` : `Timing ${name}`) : src === 'auto' ? `Logging wait at ${name}` : `Waiting at ${name}`;
     const canSwitch = (L.stand && L.candidates.length > 1) || (S.data.chains || []).some((c) => [c.main, ...c.overflow].includes(L.stand));
-    return h('footer', { class: 'bar', 'data-test': 'wait-bar' },
+    return h('footer', { class: `bar${S.tripAsk ? ' asking' : ''}`, 'data-test': 'wait-bar' }, // ADR 0017: asking gets the picker's cap
       h('p', { class: 'q', 'data-test': 'wait-timer' }, `${lead}, `, h('b', { class: 'nowrap' }, `${mins} min`)),
       h('span', { class: 'stepper', 'data-test': 'cabs-stepper' },
         h('button', { class: 'btn', 'aria-label': 'One fewer cab ahead', onclick: () => A.report(-1) }, '−'),
@@ -170,7 +170,8 @@ export function loggerBar(S, A) {
       quiet( // "Choose rank" takes the "Other stand" slot: a wait with no rank has nothing to switch from
         L.stand == null ? h('button', { class: 'btn quiet', 'data-test': 'btn-choose', onclick: A.openPicker }, 'Choose rank')
           : canSwitch ? h('button', { class: 'btn quiet', 'data-test': 'btn-switch', onclick: A.switchStand }, 'Other stand') : null,
-        h('button', { class: 'btn quiet', 'data-test': 'btn-discard', onclick: A.discard }, 'Not a rank wait')));
+        h('button', { class: 'btn quiet', 'data-test': 'btn-discard', onclick: A.discard }, 'Not a rank wait')),
+      tripLine(S, A));
   }
   if (L.mode === 'outcome') {
     const mins = L.departAt && L.joinedAt ? Math.round((L.departAt - L.joinedAt) / 60000) : null;
@@ -182,6 +183,17 @@ export function loggerBar(S, A) {
         h('button', { class: 'btn quiet', 'data-test': 'btn-discard', onclick: A.discard }, 'Not a rank wait')));
   }
   return idleBar(S, A);
+}
+
+/** ADR 0017: while he waits, parked, one quiet question about his last rank fare, named by rank and time (plan review M6). */
+function tripLine(S, A) {
+  const w = S.tripAsk;
+  if (!w) return null;
+  const q = `Fare from ${standName(S, w.stand)} at ${hhmm(new Date(w.ended_at))}: long run (10 km+)?`;
+  return h('div', { class: 'tripask', 'data-test': 'trip-ask' },
+    h('p', { class: 'q', 'data-test': 'trip-ask-q' }, q),
+    h('button', { class: 'btn quiet', 'data-test': 'trip-yes', 'aria-label': `${q} Yes`, onclick: () => A.trip(w.joined_at, true, 'bar') }, 'Yes'),
+    h('button', { class: 'btn quiet', 'data-test': 'trip-no', 'aria-label': `${q} No`, onclick: () => A.trip(w.joined_at, false, 'bar') }, 'No'));
 }
 
 function pickerBar(S, A) {

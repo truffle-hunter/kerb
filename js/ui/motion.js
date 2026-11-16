@@ -15,7 +15,7 @@ export function renderState(S, view) {
     recChanged: !!S.changed,
     mapView: S.mapView || 'kerb', // the rank map's Kerb / Area view (ADR 0011)
     why: !!S.why || !!S.tonight, // a sheet is open: "Why this rank?" (ADR 0013) or "Tonight" (ADR 0015), which opens the same way
-    drill: S.tonight && S.tonight.row ? S.tonight.row : null, // ADR 0016: the Tonight row whose detail the card shows
+    drill: S.tonight && S.tonight.row ? S.tonight.row : S.tonight && S.tonight.long ? 'long' : null, // ADR 0016: the row whose detail the card shows; ADR 0017: Long runs
   };
 }
 
